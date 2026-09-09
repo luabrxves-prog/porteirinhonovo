@@ -1,5 +1,19 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+type Device = {
+  id: string;
+  organization_id: string;
+  active: boolean;
+  archived_at: string | null;
+  api_token_hash: string;
+};
+
+type ReserveRequest = {
+  schedule_id: string;
+  user_id: string;
+  scheduled_window_start_ms: number;
+};
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -29,77 +43,71 @@ Deno.serve(async (request) => {
     .from("devices")
     .select("id,organization_id,active,archived_at,api_token_hash")
     .eq("public_id", publicId)
-    .maybeSingle();
+    .maybeSingle<Device>();
 
   if (deviceError) return json({ error: "device_lookup_failed" }, 503);
   if (!device || !device.active || device.archived_at) return json({ error: "device_not_authorized" }, 403);
   if ((await sha256(token)) !== device.api_token_hash) return json({ error: "device_token_invalid" }, 403);
 
-  let body: { schedule_id?: string; user_id?: string; scheduled_window_start?: string };
+  let body: ReserveRequest;
   try {
     body = await request.json();
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
 
-  if (!body.schedule_id || !body.user_id || !body.scheduled_window_start) {
-    return json({ error: "invalid_request" }, 422);
+  if (!body.schedule_id || !body.user_id || !Number.isFinite(body.scheduled_window_start_ms)) {
+    return json({ error: "invalid_reservation" }, 422);
   }
 
-  const { data: user, error: userError } = await supabase
-    .from("app_users")
-    .select("id,organization_id,role,active,archived_at")
-    .eq("id", body.user_id)
-    .eq("organization_id", device.organization_id)
-    .maybeSingle();
+  const windowStart = new Date(body.scheduled_window_start_ms).toISOString();
 
-  if (userError) return json({ error: "user_lookup_failed" }, 503);
+  const [{ data: user }, { data: schedule }] = await Promise.all([
+    supabase.from("app_users").select("id,role,active,archived_at").eq("organization_id", device.organization_id).eq("id", body.user_id).maybeSingle(),
+    supabase.from("patrol_schedules").select("id,fixed_slot,active,archived_at").eq("organization_id", device.organization_id).eq("id", body.schedule_id).maybeSingle(),
+  ]);
+
   if (!user || !user.active || user.archived_at || user.role !== "GATEKEEPER") {
     return json({ error: "gatekeeper_not_authorized" }, 403);
   }
-
-  const { data: schedule, error: scheduleError } = await supabase
-    .from("patrol_schedules")
-    .select("id,organization_id,active,archived_at")
-    .eq("id", body.schedule_id)
-    .eq("organization_id", device.organization_id)
-    .maybeSingle();
-
-  if (scheduleError) return json({ error: "schedule_lookup_failed" }, 503);
-  if (!schedule || !schedule.active || schedule.archived_at) return json({ error: "schedule_not_available" }, 409);
-
-  const { data: existing, error: existingError } = await supabase
-    .from("patrol_reservations")
-    .select("user_id,device_id,reserved_at")
-    .eq("schedule_id", body.schedule_id)
-    .eq("scheduled_window_start", body.scheduled_window_start)
-    .maybeSingle();
-
-  if (existingError) return json({ error: "reservation_lookup_failed" }, 503);
-  if (existing) {
-    const sameOwner = existing.user_id === body.user_id && existing.device_id === device.id;
-    return json(
-      {
-        reserved: sameOwner,
-        already_reserved: true,
-        same_owner: sameOwner,
-      },
-      sameOwner ? 200 : 409,
-    );
+  if (!schedule || !schedule.active || schedule.archived_at || schedule.fixed_slot < 1 || schedule.fixed_slot > 4) {
+    return json({ error: "patrol_not_available" }, 422);
   }
 
   const { error: insertError } = await supabase.from("patrol_reservations").insert({
     organization_id: device.organization_id,
     schedule_id: body.schedule_id,
-    scheduled_window_start: body.scheduled_window_start,
+    scheduled_window_start: windowStart,
     user_id: body.user_id,
     device_id: device.id,
   });
 
-  if (insertError?.code === "23505") {
-    return json({ reserved: false, already_reserved: true, same_owner: false }, 409);
+  if (!insertError) {
+    return json({ reserved: true, schedule_id: body.schedule_id, user_id: body.user_id, scheduled_window_start_ms: body.scheduled_window_start_ms });
   }
-  if (insertError) return json({ error: "reservation_failed", detail: insertError.code }, 500);
 
-  return json({ reserved: true, already_reserved: false });
+  if (insertError.code !== "23505") {
+    return json({ error: "reservation_failed", detail: insertError.code }, 503);
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("patrol_reservations")
+    .select("user_id,device_id,reserved_at")
+    .eq("organization_id", device.organization_id)
+    .eq("schedule_id", body.schedule_id)
+    .eq("scheduled_window_start", windowStart)
+    .maybeSingle();
+
+  if (existingError || !existing) return json({ error: "reservation_conflict" }, 409);
+
+  if (existing.user_id === body.user_id && existing.device_id === device.id) {
+    return json({ reserved: true, idempotent: true, schedule_id: body.schedule_id, user_id: body.user_id, scheduled_window_start_ms: body.scheduled_window_start_ms });
+  }
+
+  return json({
+    error: "patrol_already_reserved",
+    message: "Esta ronda já foi iniciada ou concluída por outro porteiro.",
+    reserved_by_user_id: existing.user_id,
+    reserved_at: existing.reserved_at,
+  }, 409);
 });
