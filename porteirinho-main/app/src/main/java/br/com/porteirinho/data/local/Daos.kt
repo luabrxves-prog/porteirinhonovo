@@ -45,6 +45,9 @@ interface DirectoryDao {
     @Query("SELECT * FROM checkpoints WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY sequenceHint, name")
     suspend fun activeCheckpoints(): List<CheckpointEntity>
 
+    @Query("SELECT * FROM location_nodes WHERE type = 'PLACE' AND active = 1 AND archivedAtEpochMillis IS NULL ORDER BY name LIMIT 1")
+    suspend fun firstActivePlace(): LocationNodeEntity?
+
     @Query("SELECT * FROM devices WHERE publicId = :publicId LIMIT 1")
     suspend fun findDeviceByPublicId(publicId: String): DeviceEntity?
 
