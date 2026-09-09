@@ -1,0 +1,4 @@
+project_id = "porteirinho"
+
+[functions.ingest-events]
+verify_jwt = false

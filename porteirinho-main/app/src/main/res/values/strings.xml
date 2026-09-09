@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Porteirinho</string>
+    <string name="camera_permission">A câmera é necessária para confirmar os pontos da ronda.</string>
+</resources>
