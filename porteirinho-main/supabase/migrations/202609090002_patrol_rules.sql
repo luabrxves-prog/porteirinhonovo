@@ -13,20 +13,31 @@ create unique index if not exists checkpoints_fixed_system_key_idx
     where system_key is not null and archived_at is null;
 
 alter table public.patrol_schedules
-    add column if not exists fixed_slot smallint,
-    add column if not exists start_tolerance_minutes integer not null default 10,
-    add column if not exists end_tolerance_minutes integer not null default 10,
-    add column if not exists target_duration_minutes integer not null default 60;
+    add column if not exists fixed_slot smallint;
 
 alter table public.patrol_schedules
-    add constraint patrol_schedules_fixed_slot_check check (fixed_slot is null or fixed_slot between 1 and 4),
-    add constraint patrol_schedules_start_tolerance_check check (start_tolerance_minutes between 0 and 180),
-    add constraint patrol_schedules_end_tolerance_check check (end_tolerance_minutes between 0 and 180),
-    add constraint patrol_schedules_target_duration_check check (target_duration_minutes between 1 and 720);
+    add constraint patrol_schedules_fixed_slot_check check (fixed_slot is null or fixed_slot between 1 and 4);
 
 create unique index if not exists patrol_schedules_four_fixed_slots_idx
     on public.patrol_schedules(organization_id, fixed_slot)
     where fixed_slot is not null and archived_at is null;
+
+create table public.patrol_schedule_policies (
+    schedule_id uuid primary key references public.patrol_schedules(id) on delete cascade,
+    organization_id uuid not null references public.organizations(id),
+    start_tolerance_minutes integer not null default 10 check (start_tolerance_minutes between 0 and 180),
+    end_tolerance_minutes integer not null default 10 check (end_tolerance_minutes between 0 and 180),
+    target_duration_minutes integer not null default 60 check (target_duration_minutes between 1 and 720),
+    minimum_seconds_between_scans integer not null default 15 check (minimum_seconds_between_scans between 1 and 300),
+    updated_at timestamptz not null default now()
+);
+
+alter table public.patrol_schedule_policies enable row level security;
+create policy patrol_policy_read on public.patrol_schedule_policies for select to authenticated
+    using (organization_id = public.current_organization_id());
+
+comment on table public.patrol_schedule_policies is
+    'Operational policy visible to condominium admins but writable only by trusted backend/service role.';
 
 alter table public.occurrences
     add column if not exists checkpoint_id uuid references public.checkpoints(id) on delete restrict;
@@ -46,10 +57,10 @@ select
     pe.ended_at_device,
     pe.status,
     pe.suspicious,
-    count(cv.id) as checkpoints_completed,
-    count(*) filter (where cv.suspicious) as suspicious_scans,
-    count(o.id) as observations,
-    count(a.id) filter (where a.resolved = false) as unresolved_alerts
+    count(distinct cv.id) as checkpoints_completed,
+    count(distinct cv.id) filter (where cv.suspicious) as suspicious_scans,
+    count(distinct o.id) as observations,
+    count(distinct a.id) filter (where a.resolved = false) as unresolved_alerts
 from public.patrol_executions pe
 join public.patrol_schedules ps on ps.id = pe.schedule_id
 join public.app_users au on au.id = pe.user_id
