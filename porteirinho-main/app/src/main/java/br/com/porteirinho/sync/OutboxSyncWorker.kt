@@ -22,19 +22,22 @@ class OutboxSyncWorker(
             return Result.success()
         }
 
-        val outbox = (applicationContext as PorteirinhoApplication).container.database.outboxDao()
+        val app = applicationContext as PorteirinhoApplication
+        val database = app.container.database
+        val outbox = database.outboxDao()
         val deviceId = DeviceIdentity(applicationContext).publicId
         val deviceToken = SecureStore(applicationContext).get("device_api_token")
             ?.toString(Charsets.UTF_8)
             ?.takeIf(String::isNotBlank)
             ?: return Result.success()
-        val batch = outbox.pendingBatch(BatchSize)
-        if (batch.isEmpty()) return Result.success()
+        val remote = RemoteSyncClient(applicationContext, database)
 
         var shouldRetry = false
+        val batch = outbox.pendingBatch(BatchSize)
         for (event in batch) {
             val now = System.currentTimeMillis()
-            when (val response = send(event, deviceId, deviceToken)) {
+            val enrichedPayload = runCatching { remote.enrichedPayload(event) }.getOrElse { event.payloadJson }
+            when (val response = send(event, enrichedPayload, deviceId, deviceToken)) {
                 is SendResult.Accepted -> outbox.markSynced(event.eventId, now)
                 is SendResult.PermanentFailure -> {
                     outbox.markPermanentFailure(event.eventId, now, response.message.take(MaxErrorLength))
@@ -46,6 +49,9 @@ class OutboxSyncWorker(
                 }
             }
         }
+
+        remote.pullSnapshot().onFailure { shouldRetry = true }
+
         return when {
             shouldRetry -> Result.retry()
             outbox.pendingBatch(1).isNotEmpty() -> Result.retry()
@@ -53,7 +59,12 @@ class OutboxSyncWorker(
         }
     }
 
-    private suspend fun send(event: OutboxEventEntity, deviceId: String, deviceToken: String): SendResult = withContext(Dispatchers.IO) {
+    private suspend fun send(
+        event: OutboxEventEntity,
+        payloadJson: String,
+        deviceId: String,
+        deviceToken: String,
+    ): SendResult = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/ingest-events"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -68,7 +79,7 @@ class OutboxSyncWorker(
                 setRequestProperty("X-Device-Id", deviceId)
                 setRequestProperty("X-Device-Token", deviceToken)
             }
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(event.asRequestBody()) }
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(event.asRequestBody(payloadJson)) }
             val code = connection.responseCode
             val responseText = runCatching {
                 val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -77,7 +88,7 @@ class OutboxSyncWorker(
             connection.disconnect()
 
             when {
-                code in 200..299 || code == 409 -> SendResult.Accepted
+                code in 200..299 -> SendResult.Accepted
                 code == 408 || code == 425 || code == 429 || code >= 500 -> SendResult.RetryableFailure("HTTP $code: $responseText")
                 else -> SendResult.PermanentFailure("HTTP $code: $responseText")
             }
@@ -96,13 +107,13 @@ class OutboxSyncWorker(
         )
     }
 
-    private fun OutboxEventEntity.asRequestBody(): String = buildString {
+    private fun OutboxEventEntity.asRequestBody(payload: String): String = buildString {
         append("{\"event_id\":\"").append(eventId).append("\",")
         append("\"aggregate_type\":\"").append(aggregateType).append("\",")
         append("\"aggregate_id\":\"").append(aggregateId).append("\",")
         append("\"event_type\":\"").append(eventType).append("\",")
         append("\"created_at_device\":").append(createdAtEpochMillis).append(',')
-        append("\"payload\":").append(payloadJson).append('}')
+        append("\"payload\":").append(payload).append('}')
     }
 
     private sealed interface SendResult {
