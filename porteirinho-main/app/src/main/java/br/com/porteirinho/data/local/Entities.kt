@@ -40,6 +40,9 @@ data class UserEntity(
     val active: Boolean = true,
     val pinSaltBase64: String,
     val pinHashBase64: String,
+    val mustChangePin: Boolean = false,
+    val pinIssuedAtEpochMillis: Long? = null,
+    val pinChangedAtEpochMillis: Long? = null,
     val failedPinAttempts: Int = 0,
     val lockedUntilEpochMillis: Long? = null,
     val archivedAtEpochMillis: Long? = null,
@@ -78,7 +81,7 @@ data class LocationNodeEntity(
             onDelete = ForeignKey.RESTRICT,
         ),
     ],
-    indices = [Index("locationNodeId"), Index("active")],
+    indices = [Index("locationNodeId"), Index("active"), Index("systemKey")],
 )
 data class CheckpointEntity(
     @PrimaryKey val id: String,
@@ -87,6 +90,8 @@ data class CheckpointEntity(
     val description: String? = null,
     val sequenceHint: Int = 0,
     val minimumTravelSecondsFromPrevious: Int = 0,
+    val fixed: Boolean = false,
+    val systemKey: String? = null,
     val active: Boolean = true,
     val archivedAtEpochMillis: Long? = null,
     val updatedAtEpochMillis: Long,
@@ -135,7 +140,7 @@ data class DeviceEntity(
             onDelete = ForeignKey.RESTRICT,
         ),
     ],
-    indices = [Index("propertyId"), Index("active")],
+    indices = [Index("propertyId"), Index("active"), Index("fixedSlot")],
 )
 data class PatrolScheduleEntity(
     @PrimaryKey val id: String,
@@ -145,6 +150,10 @@ data class PatrolScheduleEntity(
     val startMinuteOfDay: Int,
     val endMinuteOfDay: Int,
     val toleranceMinutes: Int,
+    val fixedSlot: Int = 0,
+    val startToleranceMinutes: Int = 10,
+    val endToleranceMinutes: Int = 10,
+    val targetDurationMinutes: Int = 60,
     val active: Boolean = true,
     val archivedAtEpochMillis: Long? = null,
     val updatedAtEpochMillis: Long,
@@ -271,11 +280,12 @@ data class CheckpointVisitEntity(
     foreignKeys = [
         ForeignKey(entity = PatrolExecutionEntity::class, parentColumns = ["id"], childColumns = ["executionId"]),
     ],
-    indices = [Index("executionId")],
+    indices = [Index("executionId"), Index("checkpointId")],
 )
 data class OccurrenceEntity(
     @PrimaryKey val id: String,
     val executionId: String,
+    val checkpointId: String? = null,
     val category: String,
     val description: String,
     val localAttachmentPath: String? = null,
