@@ -89,6 +89,9 @@ interface ScheduleDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAssignee(link: ScheduleAssigneeEntity)
+
+    @Query("DELETE FROM schedule_checkpoints")
+    suspend fun clearCheckpointLinks()
 }
 
 @Dao
@@ -143,6 +146,9 @@ interface PatrolDao {
 interface AlertDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(alert: AlertEntity)
+
+    @Query("SELECT * FROM alerts WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): AlertEntity?
 
     @Query("SELECT * FROM alerts ORDER BY createdAtEpochMillis DESC LIMIT :limit")
     fun observeRecent(limit: Int = 100): Flow<List<AlertEntity>>
