@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -23,7 +25,7 @@ import androidx.room.RoomDatabase
         AuditLogEntity::class,
         OutboxEventEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -36,8 +38,27 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun outboxDao(): OutboxDao
 
     companion object {
+        private val Migration1To2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE users ADD COLUMN mustChangePin INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE users ADD COLUMN pinIssuedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE users ADD COLUMN pinChangedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE checkpoints ADD COLUMN fixed INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE checkpoints ADD COLUMN systemKey TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_checkpoints_systemKey ON checkpoints(systemKey)")
+                db.execSQL("ALTER TABLE patrol_schedules ADD COLUMN fixedSlot INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE patrol_schedules ADD COLUMN startToleranceMinutes INTEGER NOT NULL DEFAULT 10")
+                db.execSQL("ALTER TABLE patrol_schedules ADD COLUMN endToleranceMinutes INTEGER NOT NULL DEFAULT 10")
+                db.execSQL("ALTER TABLE patrol_schedules ADD COLUMN targetDurationMinutes INTEGER NOT NULL DEFAULT 60")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_patrol_schedules_fixedSlot ON patrol_schedules(fixedSlot)")
+                db.execSQL("ALTER TABLE occurrences ADD COLUMN checkpointId TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_occurrences_checkpointId ON occurrences(checkpointId)")
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "porteirinho.db")
+                .addMigrations(Migration1To2)
                 .build()
     }
 }
