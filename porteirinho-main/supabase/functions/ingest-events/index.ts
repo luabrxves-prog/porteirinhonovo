@@ -58,11 +58,12 @@ Deno.serve(async (request) => {
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
+
   if (!event.event_id || !event.aggregate_type || !event.aggregate_id || !event.event_type || !Number.isFinite(event.created_at_device)) {
     return json({ error: "invalid_event" }, 422);
   }
 
-  const { error } = await supabase.from("ingested_events").upsert(
+  const { error: ingestError } = await supabase.from("ingested_events").upsert(
     {
       event_id: event.event_id,
       organization_id: data.organization_id,
@@ -76,12 +77,26 @@ Deno.serve(async (request) => {
     { onConflict: "event_id", ignoreDuplicates: true },
   );
 
-  if (error) return json({ error: "ingestion_failed", detail: error.code }, 500);
+  if (ingestError) return json({ error: "ingestion_failed", detail: ingestError.code }, 500);
+
+  const { data: materialized, error: materializeError } = await supabase.rpc("materialize_ingested_event", {
+    p_event_id: event.event_id,
+  });
+
+  if (materializeError) {
+    return json({ error: "materialization_failed", detail: materializeError.code }, 500);
+  }
+
+  if (materialized?.status === "REJECTED") {
+    const reason = String(materialized.error ?? "event_rejected");
+    const conflict = reason === "PATROL_RESERVED_BY_ANOTHER_GATEKEEPER" || reason === "PATROL_NOT_RESERVED";
+    return json({ error: reason, event_id: event.event_id }, conflict ? 409 : 422);
+  }
 
   await supabase.from("devices").update({
     last_activity_at: new Date(event.created_at_device).toISOString(),
     last_sync_at: new Date().toISOString(),
   }).eq("id", data.id);
 
-  return json({ accepted: true, event_id: event.event_id });
+  return json({ accepted: true, materialized: true, event_id: event.event_id });
 });
