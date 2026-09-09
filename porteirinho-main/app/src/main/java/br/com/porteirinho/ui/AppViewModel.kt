@@ -3,6 +3,7 @@ package br.com.porteirinho.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import br.com.porteirinho.BuildConfig
 import br.com.porteirinho.data.PatrolRepository
 import br.com.porteirinho.data.local.UserEntity
 import br.com.porteirinho.data.local.UserRole
@@ -57,7 +58,12 @@ class AppViewModel(
     val problemExecutionCount = repository.problemExecutionCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val unresolvedAlerts = repository.unresolvedAlertCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    init { viewModelScope.launch { repository.seedDemoIfEmpty() } }
+    init {
+        viewModelScope.launch {
+            if (BuildConfig.SUPABASE_URL.isBlank()) repository.seedDemoIfEmpty()
+            else remoteSyncClient.pullSnapshot()
+        }
+    }
 
     fun chooseArea(role: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), message = null) }
     fun chooseProfile(userId: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.PinLogin(userId), message = null) }
