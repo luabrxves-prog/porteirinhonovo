@@ -10,6 +10,7 @@ import br.com.porteirinho.domain.ActivePatrolSnapshot
 import br.com.porteirinho.domain.AvailablePatrol
 import br.com.porteirinho.domain.LoginResult
 import br.com.porteirinho.domain.ScanResult
+import br.com.porteirinho.sync.RemoteSyncClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -41,7 +42,10 @@ data class AppUiState(
     val message: String? = null,
 )
 
-class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
+class AppViewModel(
+    private val repository: PatrolRepository,
+    private val remoteSyncClient: RemoteSyncClient,
+) : ViewModel() {
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
 
@@ -116,8 +120,16 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
 
     fun startPatrol(scheduleId: String) = launchBusy {
         val user = requireUser()
-        repository.startPatrol(user.id, scheduleId).onSuccess { patrol -> _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol) }
-            .onFailure { showMessage(it.message ?: "Não foi possível iniciar a ronda.") }
+        when (val reservation = remoteSyncClient.reservePatrol(scheduleId, user.id, 0L)) {
+            RemoteSyncClient.ReservationResult.Reserved,
+            RemoteSyncClient.ReservationResult.LocalDemo -> {
+                repository.startPatrol(user.id, scheduleId)
+                    .onSuccess { patrol -> _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol) }
+                    .onFailure { showMessage(it.message ?: "Não foi possível iniciar a ronda.") }
+            }
+            is RemoteSyncClient.ReservationResult.Conflict -> showMessage(reservation.message)
+            is RemoteSyncClient.ReservationResult.Unavailable -> showMessage(reservation.message)
+        }
     }
 
     fun openScanner() { _uiState.value = _uiState.value.copy(screen = AppScreen.Scanner, message = null) }
@@ -187,8 +199,11 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
     private fun requireUser(): UserEntity = checkNotNull(_uiState.value.authenticatedUser) { "Sessão expirada." }
     private fun showMessage(message: String) { _uiState.value = _uiState.value.copy(message = message) }
 
-    class Factory(private val repository: PatrolRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: PatrolRepository,
+        private val remoteSyncClient: RemoteSyncClient,
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository, remoteSyncClient) as T
     }
 }
