@@ -39,22 +39,34 @@ interface DirectoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDevice(device: DeviceEntity)
 
+    @Query("SELECT * FROM checkpoints WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY sequenceHint, name")
+    fun observeActiveCheckpoints(): Flow<List<CheckpointEntity>>
+
+    @Query("SELECT * FROM checkpoints WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY sequenceHint, name")
+    suspend fun activeCheckpoints(): List<CheckpointEntity>
+
     @Query("SELECT * FROM devices WHERE publicId = :publicId LIMIT 1")
     suspend fun findDeviceByPublicId(publicId: String): DeviceEntity?
 
     @Query("SELECT * FROM checkpoints WHERE id = :id LIMIT 1")
     suspend fun findCheckpoint(id: String): CheckpointEntity?
 
+    @Query("SELECT * FROM qr_credentials WHERE checkpointId = :checkpointId AND status = 'ACTIVE' LIMIT 1")
+    suspend fun activeQrForCheckpoint(checkpointId: String): QrCredentialEntity?
+
     @Query("SELECT * FROM qr_credentials WHERE tokenHash = :tokenHash LIMIT 1")
     suspend fun findQrByTokenHash(tokenHash: String): QrCredentialEntity?
+
+    @Update
+    suspend fun updateQrCredential(credential: QrCredentialEntity)
 }
 
 @Dao
 interface ScheduleDao {
-    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
+    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY fixedSlot, startMinuteOfDay")
     fun observeActiveSchedules(): Flow<List<PatrolScheduleEntity>>
 
-    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
+    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY fixedSlot, startMinuteOfDay")
     suspend fun activeSchedules(): List<PatrolScheduleEntity>
 
     @Query("SELECT * FROM patrol_schedules WHERE id = :id LIMIT 1")
@@ -113,6 +125,9 @@ interface PatrolDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertOccurrence(occurrence: OccurrenceEntity)
+
+    @Query("SELECT * FROM occurrences WHERE executionId = :executionId ORDER BY createdAtEpochMillis")
+    suspend fun occurrences(executionId: String): List<OccurrenceEntity>
 
     @Query("SELECT COUNT(*) FROM patrol_executions")
     fun observeExecutionCount(): Flow<Int>
