@@ -30,7 +30,7 @@ class OutboxSyncWorker(
             ?.toString(Charsets.UTF_8)
             ?.takeIf(String::isNotBlank)
             ?: return Result.success()
-        val remote = RemoteSyncClient(applicationContext, database)
+        val remote = app.container.remoteSyncClient
 
         var shouldRetry = false
         val batch = outbox.pendingBatch(BatchSize)
@@ -50,7 +50,9 @@ class OutboxSyncWorker(
             }
         }
 
-        remote.pullSnapshot().onFailure { shouldRetry = true }
+        IncrementalSyncCoordinator(applicationContext, remote)
+            .pullIfChanged()
+            .onFailure { shouldRetry = true }
 
         return when {
             shouldRetry -> Result.retry()
@@ -78,6 +80,9 @@ class OutboxSyncWorker(
                 setRequestProperty("Idempotency-Key", event.eventId)
                 setRequestProperty("X-Device-Id", deviceId)
                 setRequestProperty("X-Device-Token", deviceToken)
+                setRequestProperty("X-App-Version", BuildConfig.VERSION_NAME)
+                setRequestProperty("X-Database-Version", DatabaseVersion.toString())
+                setRequestProperty("X-Sync-Protocol-Version", ProtocolVersion.toString())
             }
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(event.asRequestBody(payloadJson)) }
             val code = connection.responseCode
@@ -125,5 +130,7 @@ class OutboxSyncWorker(
     private companion object {
         const val BatchSize = 50
         const val MaxErrorLength = 500
+        const val DatabaseVersion = 2
+        const val ProtocolVersion = 2
     }
 }
