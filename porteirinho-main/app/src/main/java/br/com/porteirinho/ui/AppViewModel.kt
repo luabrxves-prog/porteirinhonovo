@@ -21,6 +21,7 @@ sealed interface AppScreen {
     data object AreaChoice : AppScreen
     data class ProfileChoice(val role: String) : AppScreen
     data class PinLogin(val userId: String) : AppScreen
+    data class ChangePin(val userId: String) : AppScreen
     data object GatekeeperHome : AppScreen
     data object Patrol : AppScreen
     data object Scanner : AppScreen
@@ -34,6 +35,8 @@ data class AppUiState(
     val shiftActive: Boolean = false,
     val availablePatrols: List<AvailablePatrol> = emptyList(),
     val activePatrol: ActivePatrolSnapshot? = null,
+    val observationCheckpointId: String? = null,
+    val observationCheckpointName: String? = null,
     val busy: Boolean = false,
     val message: String? = null,
 )
@@ -50,38 +53,49 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
     val problemExecutionCount = repository.problemExecutionCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val unresolvedAlerts = repository.unresolvedAlertCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    init {
-        viewModelScope.launch { repository.seedDemoIfEmpty() }
-    }
+    init { viewModelScope.launch { repository.seedDemoIfEmpty() } }
 
-    fun chooseArea(role: String) {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), message = null)
-    }
-
-    fun chooseProfile(userId: String) {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.PinLogin(userId), message = null)
-    }
+    fun chooseArea(role: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), message = null) }
+    fun chooseProfile(userId: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.PinLogin(userId), message = null) }
 
     fun login(userId: String, pin: String) = launchBusy {
         when (val result = repository.authenticate(userId, pin)) {
             is LoginResult.Error -> showMessage(result.message)
             is LoginResult.Success -> {
                 val user = repository.user(result.userId)
-                if (result.role == UserRole.ADMIN) {
+                if (result.mustChangePin) {
+                    _uiState.value = _uiState.value.copy(screen = AppScreen.ChangePin(result.userId), authenticatedUser = user)
+                } else if (result.role == UserRole.ADMIN) {
                     _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
                 } else {
-                    val active = repository.resumePatrol(result.userId)
-                    val shiftActive = repository.hasActiveShift(result.userId)
-                    _uiState.value = _uiState.value.copy(
-                        screen = if (active == null) AppScreen.GatekeeperHome else AppScreen.Patrol,
-                        authenticatedUser = user,
-                        shiftActive = shiftActive,
-                        activePatrol = active,
-                        availablePatrols = if (shiftActive) repository.availablePatrols(result.userId) else emptyList(),
-                    )
+                    enterGatekeeper(result.userId, user)
                 }
             }
         }
+    }
+
+    fun changePin(userId: String, pin: String) = launchBusy {
+        repository.changePin(userId, pin).onSuccess {
+            val user = repository.user(userId)
+            if (user?.role == UserRole.ADMIN) {
+                _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
+            } else {
+                enterGatekeeper(userId, user)
+            }
+            showMessage("Senha definida com sucesso.")
+        }.onFailure { showMessage(it.message ?: "Não foi possível definir a senha.") }
+    }
+
+    private suspend fun enterGatekeeper(userId: String, user: UserEntity?) {
+        val active = repository.resumePatrol(userId)
+        val shiftActive = repository.hasActiveShift(userId)
+        _uiState.value = _uiState.value.copy(
+            screen = if (active == null) AppScreen.GatekeeperHome else AppScreen.Patrol,
+            authenticatedUser = user,
+            shiftActive = shiftActive,
+            activePatrol = active,
+            availablePatrols = if (shiftActive) repository.availablePatrols(userId) else emptyList(),
+        )
     }
 
     fun startShift() = launchBusy {
@@ -102,23 +116,20 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
 
     fun startPatrol(scheduleId: String) = launchBusy {
         val user = requireUser()
-        repository.startPatrol(user.id, scheduleId).onSuccess { patrol ->
-            _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol)
-        }.onFailure { showMessage(it.message ?: "Não foi possível iniciar a ronda.") }
+        repository.startPatrol(user.id, scheduleId).onSuccess { patrol -> _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol) }
+            .onFailure { showMessage(it.message ?: "Não foi possível iniciar a ronda.") }
     }
 
-    fun openScanner() {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.Scanner, message = null)
-    }
-
-    fun cancelScanner() {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol)
-    }
+    fun openScanner() { _uiState.value = _uiState.value.copy(screen = AppScreen.Scanner, message = null) }
+    fun cancelScanner() { _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol) }
 
     fun processScan(rawValue: String) = launchBusy {
         val patrol = _uiState.value.activePatrol ?: return@launchBusy
         when (val result = repository.registerScan(patrol.executionId, rawValue)) {
-            is ScanResult.Accepted -> showMessage(if (result.suspicious) "Ponto confirmado e marcado para auditoria." else "${result.checkpointName} confirmado.")
+            is ScanResult.Accepted -> {
+                _uiState.value = _uiState.value.copy(observationCheckpointId = result.checkpointId, observationCheckpointName = result.checkpointName)
+                showMessage(if (result.suspicious) "Ponto confirmado. A leitura gerou um alerta para auditoria." else "${result.checkpointName} confirmado.")
+            }
             is ScanResult.AlreadyVisited -> showMessage("${result.checkpointName} já foi confirmado.")
             is ScanResult.Rejected -> showMessage(result.message)
         }
@@ -126,32 +137,35 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
         _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = repository.resumePatrol(user.id))
     }
 
+    fun saveObservation(text: String) = launchBusy {
+        val patrol = _uiState.value.activePatrol ?: return@launchBusy
+        val checkpointId = _uiState.value.observationCheckpointId ?: return@launchBusy
+        repository.addOccurrence(patrol.executionId, checkpointId, text).onSuccess {
+            _uiState.value = _uiState.value.copy(observationCheckpointId = null, observationCheckpointName = null)
+            showMessage("Observação registrada e enviada para a central de alertas.")
+        }.onFailure { showMessage(it.message ?: "Não foi possível registrar a observação.") }
+    }
+
+    fun dismissObservation() { _uiState.value = _uiState.value.copy(observationCheckpointId = null, observationCheckpointName = null) }
+
     fun finishPatrol() = launchBusy {
         val patrol = _uiState.value.activePatrol ?: return@launchBusy
         repository.finishPatrol(patrol.executionId).onSuccess { status ->
             val user = requireUser()
-            _uiState.value = _uiState.value.copy(
-                screen = AppScreen.GatekeeperHome,
-                activePatrol = null,
-                availablePatrols = repository.availablePatrols(user.id),
-            )
+            _uiState.value = _uiState.value.copy(screen = AppScreen.GatekeeperHome, activePatrol = null, observationCheckpointId = null, observationCheckpointName = null, availablePatrols = repository.availablePatrols(user.id))
             showMessage("Ronda finalizada: $status.")
         }.onFailure { showMessage(it.message ?: "Não foi possível finalizar a ronda.") }
     }
 
-    fun openAdminAlerts() {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminAlerts)
-    }
-
+    fun openAdminAlerts() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminAlerts) }
     fun resolveAlert(id: String) = viewModelScope.launch { repository.resolveAlert(id) }
 
     fun back() {
         val next = when (_uiState.value.screen) {
             AppScreen.AreaChoice -> AppScreen.AreaChoice
             is AppScreen.ProfileChoice -> AppScreen.AreaChoice
-            is AppScreen.PinLogin -> AppScreen.ProfileChoice(
-                users.value.firstOrNull { it.id == (_uiState.value.screen as AppScreen.PinLogin).userId }?.role ?: UserRole.GATEKEEPER,
-            )
+            is AppScreen.PinLogin -> AppScreen.ProfileChoice(users.value.firstOrNull { it.id == (_uiState.value.screen as AppScreen.PinLogin).userId }?.role ?: UserRole.GATEKEEPER)
+            is AppScreen.ChangePin -> AppScreen.AreaChoice
             AppScreen.GatekeeperHome -> AppScreen.AreaChoice
             AppScreen.Patrol -> AppScreen.GatekeeperHome
             AppScreen.Scanner -> AppScreen.Patrol
@@ -160,28 +174,18 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
         _uiState.value = _uiState.value.copy(screen = next, authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser, message = null)
     }
 
-    fun consumeMessage() {
-        _uiState.value = _uiState.value.copy(message = null)
-    }
+    fun consumeMessage() { _uiState.value = _uiState.value.copy(message = null) }
 
     private fun launchBusy(block: suspend () -> Unit) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            try {
-                block()
-            } catch (error: Throwable) {
-                showMessage(error.message ?: "Ocorreu um erro inesperado.")
-            } finally {
-                _uiState.value = _uiState.value.copy(busy = false)
-            }
+            try { block() } catch (error: Throwable) { showMessage(error.message ?: "Ocorreu um erro inesperado.") }
+            finally { _uiState.value = _uiState.value.copy(busy = false) }
         }
     }
 
     private fun requireUser(): UserEntity = checkNotNull(_uiState.value.authenticatedUser) { "Sessão expirada." }
-
-    private fun showMessage(message: String) {
-        _uiState.value = _uiState.value.copy(message = message)
-    }
+    private fun showMessage(message: String) { _uiState.value = _uiState.value.copy(message = message) }
 
     class Factory(private val repository: PatrolRepository) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
