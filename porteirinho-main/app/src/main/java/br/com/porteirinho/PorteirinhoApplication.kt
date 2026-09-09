@@ -9,5 +9,6 @@ class PorteirinhoApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         SyncScheduler.schedule(this)
+        SyncScheduler.runNow(this)
     }
 }
