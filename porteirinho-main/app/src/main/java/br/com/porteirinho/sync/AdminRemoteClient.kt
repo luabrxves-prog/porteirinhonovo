@@ -1,8 +1,10 @@
 package br.com.porteirinho.sync
 
 import android.content.Context
+import android.os.Build
 import android.util.Base64
 import br.com.porteirinho.BuildConfig
+import br.com.porteirinho.domain.DeviceIdentity
 import br.com.porteirinho.security.SecureStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,6 +15,8 @@ import java.net.URL
 
 class AdminRemoteClient(private val context: Context) {
     private val secureStore = SecureStore(context)
+    private val backendDeviceCredentials = BackendDeviceCredentials(context)
+    private val deviceIdentity = DeviceIdentity(context)
 
     data class QrPayload(
         val checkpointId: String,
@@ -36,6 +40,7 @@ class AdminRemoteClient(private val context: Context) {
             val role = json.optJSONObject("user")?.optJSONObject("app_metadata")?.optString("role").orEmpty()
             check(role == "admin") { "Este usuário não possui acesso administrativo." }
             saveSession(json.getString("access_token"), json.optString("refresh_token"))
+            ensureDeviceProvisioned()
         }
     }
 
@@ -98,6 +103,27 @@ class AdminRemoteClient(private val context: Context) {
             val bytes = Base64.decode(json.getString("file_base64"), Base64.DEFAULT)
             File(context.cacheDir, fileName).also { it.writeBytes(bytes) }
         }
+    }
+
+    private suspend fun ensureDeviceProvisioned() {
+        if (backendDeviceCredentials.get() != null) return
+        val response = postAdmin(
+            "admin-devices",
+            JSONObject()
+                .put("action", "provision_portaria_default")
+                .put("installation_id", deviceIdentity.publicId)
+                .put("name", "Porteirinho ${Build.MODEL}")
+                .put("model", Build.MODEL)
+                .put("android_version", Build.VERSION.RELEASE)
+                .put("app_version", BuildConfig.VERSION_NAME),
+        )
+        check(response.code in 200..299) { "Não foi possível preparar este aparelho para o condomínio." }
+        val json = JSONObject(response.body)
+        val deviceId = json.optJSONObject("device")?.optString("device_id")?.takeIf(String::isNotBlank)
+            ?: error("O servidor não retornou o identificador do aparelho.")
+        val secret = json.optString("device_secret").takeIf(String::isNotBlank)
+            ?: error("O servidor não retornou a credencial do aparelho.")
+        backendDeviceCredentials.save(deviceId, secret)
     }
 
     private suspend fun postAdmin(functionName: String, body: JSONObject): HttpResult = withContext(Dispatchers.IO) {
