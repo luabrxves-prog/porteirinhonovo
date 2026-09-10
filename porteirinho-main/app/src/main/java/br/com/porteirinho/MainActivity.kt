@@ -17,7 +17,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             PorteirinhoTheme {
                 val appViewModel: AppViewModel = viewModel(
-                    factory = AppViewModel.Factory(container.repository, container.remoteSyncClient),
+                    factory = AppViewModel.Factory(
+                        container.repository,
+                        container.remoteSyncClient,
+                        container.adminRemoteClient,
+                    ),
                 )
                 PorteirinhoApp(appViewModel)
             }
