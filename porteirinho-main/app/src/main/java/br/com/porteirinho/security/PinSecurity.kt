@@ -8,6 +8,7 @@ import javax.crypto.spec.PBEKeySpec
 
 object PinSecurity {
     private const val LocalIterations = 120_000
+    private const val BackendIterations = 210_000
     private const val KeyLengthBits = 256
 
     data class Hash(val saltBase64: String, val hashBase64: String)
@@ -24,16 +25,26 @@ object PinSecurity {
         pin: CharArray,
         encodedSalt: String,
         encodedHash: String,
-        encoding: String = "BASE64",
-        iterations: Int = LocalIterations,
+        encoding: String = "AUTO",
+        iterations: Int = 0,
     ): Boolean {
-        val salt = decode(encodedSalt, encoding)
-        val expected = decode(encodedHash, encoding)
-        val actual = derive(pin, salt, iterations)
+        val resolvedEncoding = when {
+            encoding != "AUTO" -> encoding.uppercase()
+            encodedSalt.matches(Regex("^[0-9a-fA-F]{32}$")) && encodedHash.matches(Regex("^[0-9a-fA-F]{64}$")) -> "HEX"
+            else -> "BASE64"
+        }
+        val resolvedIterations = when {
+            iterations > 0 -> iterations
+            resolvedEncoding == "HEX" -> BackendIterations
+            else -> LocalIterations
+        }
+        val salt = decode(encodedSalt, resolvedEncoding)
+        val expected = decode(encodedHash, resolvedEncoding)
+        val actual = derive(pin, salt, resolvedIterations)
         return MessageDigest.isEqual(expected, actual)
     }
 
-    private fun decode(value: String, encoding: String): ByteArray = when (encoding.uppercase()) {
+    private fun decode(value: String, encoding: String): ByteArray = when (encoding) {
         "HEX" -> value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         else -> Base64.getDecoder().decode(value)
     }
