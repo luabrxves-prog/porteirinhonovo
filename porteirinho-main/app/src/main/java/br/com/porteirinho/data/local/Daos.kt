@@ -57,6 +57,9 @@ interface DirectoryDao {
     @Query("SELECT * FROM qr_credentials WHERE checkpointId = :checkpointId AND status = 'ACTIVE' LIMIT 1")
     suspend fun activeQrForCheckpoint(checkpointId: String): QrCredentialEntity?
 
+    @Query("SELECT * FROM qr_credentials WHERE id = :id LIMIT 1")
+    suspend fun findQrById(id: String): QrCredentialEntity?
+
     @Query("SELECT * FROM qr_credentials WHERE tokenHash = :tokenHash LIMIT 1")
     suspend fun findQrByTokenHash(tokenHash: String): QrCredentialEntity?
 
@@ -104,6 +107,9 @@ interface PatrolDao {
 
     @Query("SELECT * FROM shifts WHERE endedAtEpochMillis IS NULL ORDER BY startedAtEpochMillis DESC LIMIT 1")
     suspend fun anyActiveShift(): ShiftEntity?
+
+    @Query("SELECT * FROM shifts WHERE id = :id LIMIT 1")
+    suspend fun findShift(id: String): ShiftEntity?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertShift(shift: ShiftEntity)
