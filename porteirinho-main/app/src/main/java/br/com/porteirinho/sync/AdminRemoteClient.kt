@@ -1,8 +1,8 @@
 package br.com.porteirinho.sync
 
 import android.content.Context
+import android.util.Base64
 import br.com.porteirinho.BuildConfig
-import br.com.porteirinho.domain.DeviceIdentity
 import br.com.porteirinho.security.SecureStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,10 +11,9 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-class AdminRemoteClient(
-    private val context: Context,
-    private val deviceIdentity: DeviceIdentity = DeviceIdentity(context),
-) {
+class AdminRemoteClient(private val context: Context) {
+    private val secureStore = SecureStore(context)
+
     data class QrPayload(
         val checkpointId: String,
         val credentialId: String,
@@ -22,133 +21,154 @@ class AdminRemoteClient(
         val rawPayload: String,
     )
 
-    fun requestSyncNow() {
-        SyncScheduler.runNow(context)
-    }
+    data class GatekeeperCreated(val id: String?, val name: String, val temporaryPin: String)
 
-    suspend fun resolveAlert(alertId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    fun requestSyncNow() = SyncScheduler.runNow(context)
+
+    fun hasSession(): Boolean = accessToken() != null
+
+    suspend fun login(email: String, password: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Resolução central de alerta precisa do servidor configurado." }
-            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
-            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-alert"
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                doInput = true
-                doOutput = true
-                setHeaders(token)
-            }
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
-                it.write(JSONObject().put("alert_id", alertId).toString())
-            }
-            val code = connection.responseCode
-            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
-            check(code in 200..299) { "Não foi possível resolver o alerta. HTTP $code ${response.take(160)}" }
+            require(email.isNotBlank() && password.isNotBlank()) { "Informe e-mail e senha." }
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/token?grant_type=password"
+            val body = JSONObject().put("email", email.trim()).put("password", password).toString()
+            val response = request(endpoint, "POST", body, bearer = null)
+            check(response.code in 200..299) { "E-mail ou senha inválidos." }
+            val json = JSONObject(response.body)
+            val role = json.optJSONObject("user")?.optJSONObject("app_metadata")?.optString("role").orEmpty()
+            check(role == "admin") { "Este usuário não possui acesso administrativo." }
+            saveSession(json.getString("access_token"), json.optString("refresh_token"))
         }
     }
 
-    suspend fun createPoint(name: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Cadastro de ponto precisa do servidor configurado." }
-            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
-            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-point"
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                doInput = true
-                doOutput = true
-                setHeaders(token)
-            }
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
-                it.write(JSONObject().put("name", name.trim()).toString())
-            }
-            val code = connection.responseCode
-            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
-            check(code in 200..299) {
-                if (response.contains("patrol_active")) "Aguarde a ronda em andamento terminar para alterar os pontos."
-                else "Não foi possível cadastrar o ponto. HTTP $code ${response.take(160)}"
-            }
+    fun logout() {
+        secureStore.put(KeyAccessToken, ByteArray(0))
+        secureStore.put(KeyRefreshToken, ByteArray(0))
+    }
+
+    suspend fun resolveAlert(alertId: String): Result<Unit> = runCatching {
+        val response = postAdmin("admin-alert", JSONObject().put("alert_id", alertId))
+        check(response.code in 200..299) { "Não foi possível resolver o alerta." }
+    }
+
+    suspend fun createPoint(name: String, floorId: String): Result<Unit> = runCatching {
+        val response = postAdmin("admin-point", JSONObject().put("name", name.trim()).put("floor_id", floorId))
+        check(response.code in 200..299) {
+            if (response.body.contains("PATROL_ACTIVE")) "Aguarde a ronda em andamento terminar para alterar os pontos."
+            else "Não foi possível cadastrar o ponto."
         }
     }
 
-    suspend fun getQr(checkpointId: String): Result<QrPayload> = qrOperation("get", checkpointId)
+    suspend fun getQr(checkpointId: String): Result<QrPayload> = runCatching {
+        val response = postAdmin("admin-qr", JSONObject().put("action", "get_active").put("checkpoint_id", checkpointId))
+        check(response.code in 200..299) { "Não foi possível carregar o QR Code." }
+        val qr = JSONObject(response.body).optJSONObject("qr") ?: error("Este ponto ainda não possui QR Code ativo.")
+        QrPayload(
+            checkpointId = checkpointId,
+            credentialId = qr.getString("qr_token_id"),
+            version = qr.optInt("version", 1),
+            rawPayload = qr.getString("token_value"),
+        )
+    }
 
-    suspend fun replaceQr(checkpointId: String): Result<QrPayload> = qrOperation("replace", checkpointId)
+    suspend fun replaceQr(checkpointId: String): Result<QrPayload> = runCatching {
+        val response = postAdmin("admin-qr", JSONObject().put("action", "replace").put("checkpoint_id", checkpointId))
+        check(response.code in 200..299) { "Não foi possível substituir o QR Code." }
+        val json = JSONObject(response.body)
+        QrPayload(
+            checkpointId = checkpointId,
+            credentialId = json.getString("qr_token_id"),
+            version = json.optInt("version", 1),
+            rawPayload = json.getString("token_value"),
+        )
+    }
+
+    suspend fun createGatekeeper(name: String): Result<GatekeeperCreated> = runCatching {
+        val response = postAdmin("admin-guards", JSONObject().put("action", "create").put("name", name.trim()))
+        check(response.code in 200..299) { "Não foi possível cadastrar o porteiro." }
+        val json = JSONObject(response.body)
+        val guard = json.optJSONObject("guard")
+        GatekeeperCreated(
+            id = guard?.optString("guard_id")?.takeIf(String::isNotBlank),
+            name = guard?.optString("guard_name")?.takeIf(String::isNotBlank) ?: name.trim(),
+            temporaryPin = json.getString("temporary_pin"),
+        )
+    }
+
+    suspend fun updateSchedule(scheduleId: String, name: String, startMinute: Int): Result<Unit> = runCatching {
+        val response = postAdmin(
+            "admin-schedules",
+            JSONObject().put("patrol_template_id", scheduleId).put("name", name.trim()).put("start_minute", startMinute),
+        )
+        check(response.code in 200..299) { "Não foi possível atualizar a ronda." }
+    }
 
     suspend fun downloadReport(days: Int): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             require(days in setOf(30, 90, 120)) { "Período inválido." }
-            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Relatórios precisam do servidor configurado." }
-            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
-            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-report?days=$days"
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 20_000
-                readTimeout = 40_000
-                doInput = true
-                setHeaders(token)
-            }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                connection.disconnect()
-                error("Não foi possível gerar o relatório. HTTP $code ${error.take(160)}")
-            }
-            val file = File(context.cacheDir, "porteirinho-rondas-$days-dias.xlsx")
-            connection.inputStream.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
-            connection.disconnect()
-            file
+            val response = postAdmin("admin-reports", JSONObject().put("days", days))
+            check(response.code in 200..299) { "Não foi possível gerar o relatório." }
+            val json = JSONObject(response.body)
+            val fileName = json.optString("file_name").ifBlank { "Porteirinho_${days}d.xlsx" }
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val bytes = Base64.decode(json.getString("file_base64"), Base64.DEFAULT)
+            File(context.cacheDir, fileName).also { it.writeBytes(bytes) }
         }
     }
 
-    private suspend fun qrOperation(action: String, checkpointId: String): Result<QrPayload> = withContext(Dispatchers.IO) {
-        runCatching {
-            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "QR administrativo precisa do servidor configurado." }
-            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
-            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-qr"
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                doInput = true
-                doOutput = true
-                setHeaders(token)
-            }
-            val requestBody = JSONObject()
-                .put("action", action)
-                .put("checkpoint_id", checkpointId)
-                .toString()
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(requestBody) }
-            val code = connection.responseCode
-            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
-            check(code in 200..299) { "Não foi possível acessar o QR Code. HTTP $code ${response.take(160)}" }
-            val json = JSONObject(response)
-            QrPayload(
-                checkpointId = json.getString("checkpoint_id"),
-                credentialId = json.getString("qr_credential_id"),
-                version = json.getInt("version"),
-                rawPayload = json.getString("raw_payload"),
-            )
+    private suspend fun postAdmin(functionName: String, body: JSONObject): HttpResult = withContext(Dispatchers.IO) {
+        val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/$functionName"
+        var token = accessToken() ?: error("Entre novamente na Administração.")
+        var response = request(endpoint, "POST", body.toString(), token)
+        if (response.code == 401) {
+            token = refreshAccessToken() ?: error("Sua sessão expirou. Entre novamente na Administração.")
+            response = request(endpoint, "POST", body.toString(), token)
         }
+        response
     }
 
-    private fun HttpURLConnection.setHeaders(token: String) {
-        setRequestProperty("Content-Type", "application/json")
-        setRequestProperty("apikey", BuildConfig.SUPABASE_PUBLISHABLE_KEY)
-        setRequestProperty("Authorization", "Bearer ${BuildConfig.SUPABASE_PUBLISHABLE_KEY}")
-        setRequestProperty("X-Device-Id", deviceIdentity.publicId)
-        setRequestProperty("X-Device-Token", token)
+    private fun refreshAccessToken(): String? {
+        val refresh = refreshToken() ?: return null
+        val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/token?grant_type=refresh_token"
+        val response = request(endpoint, "POST", JSONObject().put("refresh_token", refresh).toString(), bearer = null)
+        if (response.code !in 200..299) return null
+        val json = JSONObject(response.body)
+        val access = json.optString("access_token").takeIf(String::isNotBlank) ?: return null
+        saveSession(access, json.optString("refresh_token").ifBlank { refresh })
+        return access
     }
 
-    private fun deviceToken(): String? = SecureStore(context).get("device_api_token")
-        ?.toString(Charsets.UTF_8)
-        ?.takeIf(String::isNotBlank)
+    private fun request(endpoint: String, method: String, body: String, bearer: String?): HttpResult {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 15_000
+            readTimeout = 45_000
+            doInput = true
+            doOutput = body.isNotEmpty()
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("apikey", BuildConfig.SUPABASE_PUBLISHABLE_KEY)
+            if (!bearer.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $bearer")
+        }
+        if (body.isNotEmpty()) connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+        val code = connection.responseCode
+        val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
+            ?.bufferedReader()?.use { it.readText() }.orEmpty()
+        connection.disconnect()
+        return HttpResult(code, text)
+    }
+
+    private fun saveSession(access: String, refresh: String) {
+        secureStore.put(KeyAccessToken, access.toByteArray(Charsets.UTF_8))
+        if (refresh.isNotBlank()) secureStore.put(KeyRefreshToken, refresh.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun accessToken(): String? = secureStore.get(KeyAccessToken)?.toString(Charsets.UTF_8)?.takeIf(String::isNotBlank)
+    private fun refreshToken(): String? = secureStore.get(KeyRefreshToken)?.toString(Charsets.UTF_8)?.takeIf(String::isNotBlank)
+
+    private data class HttpResult(val code: Int, val body: String)
+
+    private companion object {
+        const val KeyAccessToken = "admin_access_token"
+        const val KeyRefreshToken = "admin_refresh_token"
+    }
 }
