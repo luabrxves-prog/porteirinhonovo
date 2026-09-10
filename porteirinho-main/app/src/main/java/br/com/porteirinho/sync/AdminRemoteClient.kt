@@ -22,6 +22,10 @@ class AdminRemoteClient(
         val rawPayload: String,
     )
 
+    fun requestSyncNow() {
+        SyncScheduler.runNow(context)
+    }
+
     suspend fun createPoint(name: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Cadastro de ponto precisa do servidor configurado." }
