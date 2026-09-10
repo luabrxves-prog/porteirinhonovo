@@ -49,7 +49,7 @@ Deno.serve(async (req: Request) => {
   const hhmmss = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}:00`
   const expectedVersions = Object.fromEntries(windows.map((w: any) => [w.id, w.version]))
 
-  const { error: timeError } = await admin.rpc('admin_update_fixed_patrol_times', {
+  const { error: timeError } = await userClient.rpc('admin_update_fixed_patrol_times', {
     p_template_id: templateId,
     p_start_time: hhmmss(startMinute),
     p_end_time: hhmmss(endMinute),
