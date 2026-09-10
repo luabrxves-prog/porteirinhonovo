@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import br.com.porteirinho.BuildConfig
 import br.com.porteirinho.data.local.*
 import br.com.porteirinho.domain.DeviceIdentity
+import br.com.porteirinho.security.SecureStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -19,12 +20,60 @@ class RemoteSyncClient(
     private val deviceIdentity: DeviceIdentity = DeviceIdentity(context),
 ) {
     private val backendCredentials = BackendDeviceCredentials(context)
+    private val secureStore = SecureStore(context)
 
     sealed interface ReservationResult {
         data object Reserved : ReservationResult
         data object LocalDemo : ReservationResult
         data class Conflict(val message: String) : ReservationResult
         data class Unavailable(val message: String) : ReservationResult
+    }
+
+    suspend fun loginGuardOnline(userId: String, pin: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (BuildConfig.SUPABASE_URL.isBlank()) return@runCatching false
+            val credentials = backendCredentials.get() ?: error("Este aparelho ainda precisa ser pareado pela administração.")
+            val connection = openConnection("portaria-ops", credentials)
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
+                it.write(JSONObject().put("action", "login_guard").put("guard_id", userId).put("pin", pin).toString())
+            }
+            val code = connection.responseCode
+            val response = responseText(connection, code)
+            connection.disconnect()
+            check(code in 200..299) {
+                when {
+                    response.contains("PIN_TEMPORARILY_LOCKED") -> "Acesso temporariamente bloqueado. Tente novamente mais tarde."
+                    else -> "Não foi possível validar o acesso no servidor."
+                }
+            }
+            val json = JSONObject(response)
+            val session = json.optString("guard_session").takeIf(String::isNotBlank)
+                ?: error("Sessão do porteiro não foi criada.")
+            secureStore.put(KeyGuardSession, session.toByteArray(Charsets.UTF_8))
+            secureStore.put(KeyGuardSessionUser, userId.toByteArray(Charsets.UTF_8))
+            json.optBoolean("must_change_pin", false)
+        }
+    }
+
+    suspend fun changeGuardPinOnline(userId: String, newPin: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (BuildConfig.SUPABASE_URL.isBlank()) return@runCatching
+            val credentials = backendCredentials.get() ?: error("Este aparelho ainda precisa ser pareado pela administração.")
+            val sessionUser = secureStore.get(KeyGuardSessionUser)?.toString(Charsets.UTF_8)
+            val session = secureStore.get(KeyGuardSession)?.toString(Charsets.UTF_8)?.takeIf(String::isNotBlank)
+            check(session != null && sessionUser == userId) { "Entre novamente com o PIN temporário para definir sua senha." }
+            val connection = openConnection("portaria-ops", credentials, session)
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
+                it.write(JSONObject().put("action", "change_pin").put("new_pin", newPin).toString())
+            }
+            val code = connection.responseCode
+            val response = responseText(connection, code)
+            connection.disconnect()
+            check(code in 200..299) {
+                if (response.contains("INVALID_PIN_FORMAT")) "O novo PIN deve conter exatamente 6 dígitos."
+                else "Não foi possível salvar o novo PIN no servidor."
+            }
+        }
     }
 
     suspend fun reservePatrol(scheduleId: String, userId: String, scheduledWindowStartEpochMillis: Long): ReservationResult = withContext(Dispatchers.IO) {
@@ -244,13 +293,18 @@ class RemoteSyncClient(
         return null
     }
 
-    private fun openConnection(functionName: String, credentials: BackendDeviceCredentials.Credentials): HttpURLConnection =
+    private fun openConnection(
+        functionName: String,
+        credentials: BackendDeviceCredentials.Credentials,
+        guardSession: String? = null,
+    ): HttpURLConnection =
         (URL(BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/$functionName").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 15_000; readTimeout = 25_000; doInput = true; doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("apikey", BuildConfig.SUPABASE_PUBLISHABLE_KEY)
             setRequestProperty("X-Device-Id", credentials.deviceId)
             setRequestProperty("X-Device-Secret", credentials.secret)
+            if (!guardSession.isNullOrBlank()) setRequestProperty("X-Guard-Session", guardSession)
         }
 
     private fun responseText(connection: HttpURLConnection, code: Int): String =
@@ -260,4 +314,9 @@ class RemoteSyncClient(
     private fun durationMinutes(start: Int, end: Int): Int = if (end >= start) end - start else 1440 - start + end
     private fun iso(epochMillis: Long): String = java.time.Instant.ofEpochMilli(epochMillis).toString()
     private fun unwrapObject(value: Any?): JSONObject? = when (value) { is JSONObject -> value; is JSONArray -> if (value.length() > 0) value.optJSONObject(0) else null; else -> null }
+
+    private companion object {
+        const val KeyGuardSession = "guard_session"
+        const val KeyGuardSessionUser = "guard_session_user"
+    }
 }
