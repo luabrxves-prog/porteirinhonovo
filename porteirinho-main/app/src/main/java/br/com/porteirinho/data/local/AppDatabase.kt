@@ -25,7 +25,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AuditLogEntity::class,
         OutboxEventEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -56,9 +56,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val Migration2To3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE users ADD COLUMN pinEncoding TEXT NOT NULL DEFAULT 'BASE64'")
+                db.execSQL("ALTER TABLE users ADD COLUMN pinIterations INTEGER NOT NULL DEFAULT 120000")
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "porteirinho.db")
-                .addMigrations(Migration1To2)
+                .addMigrations(Migration1To2, Migration2To3)
                 .build()
     }
 }
