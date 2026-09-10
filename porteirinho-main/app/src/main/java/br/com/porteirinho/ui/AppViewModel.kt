@@ -11,6 +11,7 @@ import br.com.porteirinho.domain.ActivePatrolSnapshot
 import br.com.porteirinho.domain.AvailablePatrol
 import br.com.porteirinho.domain.LoginResult
 import br.com.porteirinho.domain.ScanResult
+import br.com.porteirinho.sync.AdminRemoteClient
 import br.com.porteirinho.sync.RemoteSyncClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,6 +30,11 @@ sealed interface AppScreen {
     data object Scanner : AppScreen
     data object AdminDashboard : AppScreen
     data object AdminAlerts : AppScreen
+    data object AdminPoints : AppScreen
+    data class AdminQr(val checkpointId: String) : AppScreen
+    data object AdminSchedules : AppScreen
+    data object AdminGatekeepers : AppScreen
+    data object AdminReports : AppScreen
 }
 
 data class AppUiState(
@@ -39,6 +45,9 @@ data class AppUiState(
     val activePatrol: ActivePatrolSnapshot? = null,
     val observationCheckpointId: String? = null,
     val observationCheckpointName: String? = null,
+    val adminQrPayload: AdminRemoteClient.QrPayload? = null,
+    val generatedGatekeeperPin: String? = null,
+    val reportFilePath: String? = null,
     val busy: Boolean = false,
     val message: String? = null,
 )
@@ -46,11 +55,14 @@ data class AppUiState(
 class AppViewModel(
     private val repository: PatrolRepository,
     private val remoteSyncClient: RemoteSyncClient,
+    private val adminRemoteClient: AdminRemoteClient,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
 
     val users = repository.activeUsers.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val checkpoints = repository.checkpoints.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val schedules = repository.schedules.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val alerts = repository.recentAlerts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val pendingSync = repository.pendingSyncCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val permanentFailures = repository.permanentSyncFailureCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
@@ -176,6 +188,76 @@ class AppViewModel(
     }
 
     fun openAdminAlerts() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminAlerts) }
+    fun openAdminPoints() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminPoints) }
+    fun openAdminSchedules() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminSchedules) }
+    fun openAdminGatekeepers() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminGatekeepers, generatedGatekeeperPin = null) }
+    fun openAdminReports() { _uiState.value = _uiState.value.copy(screen = AppScreen.AdminReports, reportFilePath = null) }
+
+    fun addAdminPoint(name: String) = launchBusy {
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            repository.addExtraCheckpoint("place-demo", name).getOrThrow()
+        } else {
+            adminRemoteClient.createPoint(name).getOrThrow()
+            remoteSyncClient.pullSnapshot().getOrThrow()
+        }
+        showMessage("Ponto adicionado às quatro rondas.")
+    }
+
+    fun openAdminQr(checkpointId: String) = launchBusy {
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminQr(checkpointId), adminQrPayload = null)
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            showMessage("No modo de demonstração, substitua o QR para gerar um código visualizável.")
+        } else {
+            adminRemoteClient.getQr(checkpointId)
+                .onSuccess { _uiState.value = _uiState.value.copy(adminQrPayload = it) }
+                .onFailure { showMessage(it.message ?: "Não foi possível carregar o QR Code.") }
+        }
+    }
+
+    fun replaceAdminQr(checkpointId: String) = launchBusy {
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            val raw = repository.replaceQr(checkpointId).getOrThrow()
+            _uiState.value = _uiState.value.copy(
+                adminQrPayload = AdminRemoteClient.QrPayload(checkpointId, "demo", 1, raw),
+            )
+        } else {
+            val qr = adminRemoteClient.replaceQr(checkpointId).getOrThrow()
+            _uiState.value = _uiState.value.copy(adminQrPayload = qr)
+            remoteSyncClient.pullSnapshot()
+        }
+        showMessage("QR Code substituído. O código anterior não funciona mais.")
+    }
+
+    fun updateAdminSchedule(scheduleId: String, name: String, startMinuteOfDay: Int) = launchBusy {
+        repository.updateFixedSchedule(scheduleId, name, startMinuteOfDay)
+            .onSuccess { showMessage("Ronda atualizada.") }
+            .onFailure { showMessage(it.message ?: "Não foi possível atualizar a ronda.") }
+    }
+
+    fun createAdminGatekeeper(displayName: String) = launchBusy {
+        repository.createGatekeeper(displayName)
+            .onSuccess { (_, pin) ->
+                _uiState.value = _uiState.value.copy(generatedGatekeeperPin = pin)
+                showMessage("Porteiro cadastrado. Entregue o PIN temporário para o primeiro acesso.")
+            }
+            .onFailure { showMessage(it.message ?: "Não foi possível cadastrar o porteiro.") }
+    }
+
+    fun clearGeneratedGatekeeperPin() {
+        _uiState.value = _uiState.value.copy(generatedGatekeeperPin = null)
+    }
+
+    fun downloadAdminReport(days: Int) = launchBusy {
+        adminRemoteClient.downloadReport(days)
+            .onSuccess { file ->
+                _uiState.value = _uiState.value.copy(reportFilePath = file.absolutePath)
+                showMessage("Relatório de $days dias gerado.")
+            }
+            .onFailure { showMessage(it.message ?: "Não foi possível gerar o relatório.") }
+    }
+
+    fun clearReportFile() { _uiState.value = _uiState.value.copy(reportFilePath = null) }
+
     fun resolveAlert(id: String) = viewModelScope.launch { repository.resolveAlert(id) }
 
     fun back() {
@@ -187,9 +269,20 @@ class AppViewModel(
             AppScreen.GatekeeperHome -> AppScreen.AreaChoice
             AppScreen.Patrol -> AppScreen.GatekeeperHome
             AppScreen.Scanner -> AppScreen.Patrol
-            AppScreen.AdminDashboard, AppScreen.AdminAlerts -> AppScreen.AreaChoice
+            AppScreen.AdminDashboard -> AppScreen.AreaChoice
+            AppScreen.AdminAlerts,
+            AppScreen.AdminPoints,
+            AppScreen.AdminSchedules,
+            AppScreen.AdminGatekeepers,
+            AppScreen.AdminReports -> AppScreen.AdminDashboard
+            is AppScreen.AdminQr -> AppScreen.AdminPoints
         }
-        _uiState.value = _uiState.value.copy(screen = next, authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser, message = null)
+        _uiState.value = _uiState.value.copy(
+            screen = next,
+            authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser,
+            adminQrPayload = if (next is AppScreen.AdminQr) _uiState.value.adminQrPayload else null,
+            message = null,
+        )
     }
 
     fun consumeMessage() { _uiState.value = _uiState.value.copy(message = null) }
@@ -208,8 +301,10 @@ class AppViewModel(
     class Factory(
         private val repository: PatrolRepository,
         private val remoteSyncClient: RemoteSyncClient,
+        private val adminRemoteClient: AdminRemoteClient,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository, remoteSyncClient) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            AppViewModel(repository, remoteSyncClient, adminRemoteClient) as T
     }
 }
