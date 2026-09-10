@@ -22,27 +22,24 @@ Deno.serve(async (req: Request) => {
   const deviceSecret = req.headers.get('x-device-secret') || ''
   if (!deviceId || !deviceSecret) return json({ error: 'DEVICE_AUTH_REQUIRED' }, 401)
 
-  const { data: device, error: deviceError } = await db
-    .from('devices').select('id,status,building_id').eq('id', deviceId).maybeSingle()
+  const { data: device, error: deviceError } = await db.from('devices').select('id,status,building_id').eq('id', deviceId).maybeSingle()
   if (deviceError) return json({ error: deviceError.message }, 500)
   if (!device || device.status !== 'ACTIVE' || !device.building_id) return json({ error: 'DEVICE_NOT_ACTIVE' }, 403)
 
-  const { data: credential, error: credentialError } = await db
-    .from('device_credentials').select('secret_hash').eq('device_id', deviceId).maybeSingle()
+  const { data: credential, error: credentialError } = await db.from('device_credentials').select('secret_hash').eq('device_id', deviceId).maybeSingle()
   if (credentialError) return json({ error: credentialError.message }, 500)
   if (!credential || credential.secret_hash !== await sha256(deviceSecret)) return json({ error: 'INVALID_DEVICE_SECRET' }, 401)
 
   const buildingId = device.building_id
-  const { data: buildingDevices, error: buildingDevicesError } = await db
-    .from('devices').select('id').eq('building_id', buildingId)
+  const { data: buildingDevices, error: buildingDevicesError } = await db.from('devices').select('id').eq('building_id', buildingId)
   if (buildingDevicesError) return json({ error: buildingDevicesError.message }, 500)
   const deviceIds = (buildingDevices || []).map((x: any) => x.id)
-
   const cutoff = new Date(Date.now() - 120 * 24 * 60 * 60_000).toISOString()
+
   const [buildingResult, guardsResult, patrolsResult, windowsResult, assignmentsResult, checkpointLinksResult, checkpointsResult, qrsResult, alertsResult] = await Promise.all([
     db.from('buildings').select('id,name,timezone').eq('id', buildingId).eq('active', true).maybeSingle(),
-    db.from('guards').select('id,name,photo_url,pin_state,active,guard_credentials(pin_hash,pin_salt,iterations,must_change_pin,credential_version)').eq('active', true).order('name'),
-    db.from('patrol_templates').select('id,building_id,name,description,system_fixed').eq('building_id', buildingId).eq('active', true).order('created_at'),
+    db.from('guards').select('id,name,photo_url,pin_state,active,guard_credentials(pin_hash,pin_salt,iterations,must_change_pin,credential_version)').eq('active', true).is('e2e_run_id', null).order('name'),
+    db.from('patrol_templates').select('id,building_id,name,description,system_fixed').eq('building_id', buildingId).eq('active', true).eq('system_fixed', true).order('created_at'),
     db.from('patrol_schedule_windows').select('id,patrol_template_id,day_of_week,start_time,end_time,late_tolerance_minutes,version').eq('active', true),
     db.from('patrol_schedule_assignments').select('schedule_window_id,guard_id').eq('active', true),
     db.from('patrol_template_checkpoints').select('patrol_template_id,checkpoint_id,required').eq('active', true),
@@ -57,7 +54,7 @@ Deno.serve(async (req: Request) => {
   if (errors.length > 0) return json({ error: errors[0]?.message || 'CACHE_QUERY_FAILED' }, 500)
   if (!buildingResult.data) return json({ error: 'BUILDING_NOT_ACTIVE' }, 409)
 
-  const patrols = (patrolsResult.data || []).filter((x: any) => x.system_fixed)
+  const patrols = patrolsResult.data || []
   const patrolIds = new Set(patrols.map((x: any) => x.id))
   const checkpointIds = new Set((checkpointsResult.data || []).map((x: any) => x.id))
   const windows = (windowsResult.data || []).filter((x: any) => patrolIds.has(x.patrol_template_id))
