@@ -32,6 +32,8 @@ import java.util.Date
 fun PorteirinhoApp(viewModel: AppViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
+    val checkpoints by viewModel.checkpoints.collectAsStateWithLifecycle()
+    val schedules by viewModel.schedules.collectAsStateWithLifecycle()
     val alerts by viewModel.alerts.collectAsStateWithLifecycle()
     val pendingSync by viewModel.pendingSync.collectAsStateWithLifecycle()
     val permanentFailures by viewModel.permanentFailures.collectAsStateWithLifecycle()
@@ -66,8 +68,31 @@ fun PorteirinhoApp(viewModel: AppViewModel) {
                     onDismissObservation = viewModel::dismissObservation,
                 )
                 AppScreen.Scanner -> QrScannerView(viewModel::processScan, viewModel::cancelScanner)
-                AppScreen.AdminDashboard -> AdminDashboardScreen(executions, problems, unresolved, pendingSync, permanentFailures, viewModel::openAdminAlerts, viewModel::back)
+                AppScreen.AdminDashboard -> AdminDashboardScreen(
+                    executionCount = executions,
+                    problemCount = problems,
+                    unresolvedAlerts = unresolved,
+                    pendingSync = pendingSync,
+                    permanentFailures = permanentFailures,
+                    onAlerts = viewModel::openAdminAlerts,
+                    onPoints = viewModel::openAdminPoints,
+                    onSchedules = viewModel::openAdminSchedules,
+                    onGatekeepers = viewModel::openAdminGatekeepers,
+                    onReports = viewModel::openAdminReports,
+                    onExit = viewModel::back,
+                )
                 AppScreen.AdminAlerts -> AlertsScreen(alerts, viewModel::resolveAlert, viewModel::back)
+                AppScreen.AdminPoints -> AdminPointsScreen(checkpoints, state.busy, viewModel::addAdminPoint, viewModel::openAdminQr, viewModel::back)
+                is AppScreen.AdminQr -> AdminQrScreen(
+                    checkpoint = checkpoints.firstOrNull { it.id == screen.checkpointId },
+                    qr = state.adminQrPayload,
+                    busy = state.busy,
+                    onReplace = { viewModel.replaceAdminQr(screen.checkpointId) },
+                    onBack = viewModel::back,
+                )
+                AppScreen.AdminSchedules -> AdminSchedulesScreen(schedules, state.busy, viewModel::updateAdminSchedule, viewModel::back)
+                AppScreen.AdminGatekeepers -> AdminGatekeepersScreen(users, state.generatedGatekeeperPin, state.busy, viewModel::createAdminGatekeeper, viewModel::clearGeneratedGatekeeperPin, viewModel::back)
+                AppScreen.AdminReports -> AdminReportsScreen(state.reportFilePath, state.busy, viewModel::downloadAdminReport, viewModel::back)
             }
             if (state.busy) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .15f)), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -223,7 +248,19 @@ private fun PatrolScreen(patrol: ActivePatrolSnapshot?, busy: Boolean, observati
 }
 
 @Composable
-private fun AdminDashboardScreen(executionCount: Int, problemCount: Int, unresolvedAlerts: Int, pendingSync: Int, permanentFailures: Int, onAlerts: () -> Unit, onExit: () -> Unit) {
+private fun AdminDashboardScreen(
+    executionCount: Int,
+    problemCount: Int,
+    unresolvedAlerts: Int,
+    pendingSync: Int,
+    permanentFailures: Int,
+    onAlerts: () -> Unit,
+    onPoints: () -> Unit,
+    onSchedules: () -> Unit,
+    onGatekeepers: () -> Unit,
+    onReports: () -> Unit,
+    onExit: () -> Unit,
+) {
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Administração", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
         item {
@@ -234,10 +271,10 @@ private fun AdminDashboardScreen(executionCount: Int, problemCount: Int, unresol
             }
         }
         item { AdminCard("Central de alertas", "$unresolvedAlerts não resolvidos", onAlerts) }
-        item { AdminCard("Pontos de ronda", "15 pontos fixos + pontos extras; QR pode ser substituído", {}) }
-        item { AdminCard("4 rondas fixas", "Somente nome e horário podem ser alterados", {}) }
-        item { AdminCard("Porteiros", "Cadastro com PIN automático e troca no primeiro acesso", {}) }
-        item { AdminCard("Relatórios", "Exportação de 30, 90 ou 120 dias", {}) }
+        item { AdminCard("Pontos de ronda", "15 pontos fixos + pontos extras e QR Codes", onPoints) }
+        item { AdminCard("4 rondas fixas", "Alterar nome e horário", onSchedules) }
+        item { AdminCard("Porteiros", "Cadastrar e acompanhar primeiro acesso", onGatekeepers) }
+        item { AdminCard("Relatórios", "Excel de 30, 90 ou 120 dias", onReports) }
         if (permanentFailures > 0) item { Text("$permanentFailures falhas de sincronização precisam de atenção.", color = MaterialTheme.colorScheme.error) }
         item { TextButton(onExit) { Text("Sair da administração") } }
     }
