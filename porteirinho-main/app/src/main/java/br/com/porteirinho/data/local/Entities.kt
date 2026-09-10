@@ -40,6 +40,8 @@ data class UserEntity(
     val active: Boolean = true,
     val pinSaltBase64: String,
     val pinHashBase64: String,
+    val pinEncoding: String = "BASE64",
+    val pinIterations: Int = 120_000,
     val mustChangePin: Boolean = false,
     val pinIssuedAtEpochMillis: Long? = null,
     val pinChangedAtEpochMillis: Long? = null,
@@ -163,50 +165,23 @@ data class PatrolScheduleEntity(
     tableName = "schedule_checkpoints",
     primaryKeys = ["scheduleId", "checkpointId"],
     foreignKeys = [
-        ForeignKey(
-            entity = PatrolScheduleEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["scheduleId"],
-            onDelete = ForeignKey.CASCADE,
-        ),
-        ForeignKey(
-            entity = CheckpointEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["checkpointId"],
-            onDelete = ForeignKey.RESTRICT,
-        ),
+        ForeignKey(entity = PatrolScheduleEntity::class, parentColumns = ["id"], childColumns = ["scheduleId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = CheckpointEntity::class, parentColumns = ["id"], childColumns = ["checkpointId"], onDelete = ForeignKey.RESTRICT),
     ],
     indices = [Index("checkpointId")],
 )
-data class ScheduleCheckpointEntity(
-    val scheduleId: String,
-    val checkpointId: String,
-    val sequence: Int,
-)
+data class ScheduleCheckpointEntity(val scheduleId: String, val checkpointId: String, val sequence: Int)
 
 @Entity(
     tableName = "schedule_assignees",
     primaryKeys = ["scheduleId", "userId"],
     foreignKeys = [
-        ForeignKey(
-            entity = PatrolScheduleEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["scheduleId"],
-            onDelete = ForeignKey.CASCADE,
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["userId"],
-            onDelete = ForeignKey.RESTRICT,
-        ),
+        ForeignKey(entity = PatrolScheduleEntity::class, parentColumns = ["id"], childColumns = ["scheduleId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = UserEntity::class, parentColumns = ["id"], childColumns = ["userId"], onDelete = ForeignKey.RESTRICT),
     ],
     indices = [Index("userId")],
 )
-data class ScheduleAssigneeEntity(
-    val scheduleId: String,
-    val userId: String,
-)
+data class ScheduleAssigneeEntity(val scheduleId: String, val userId: String)
 
 @Entity(
     tableName = "shifts",
@@ -232,7 +207,7 @@ data class ShiftEntity(
         ForeignKey(entity = UserEntity::class, parentColumns = ["id"], childColumns = ["userId"]),
         ForeignKey(entity = DeviceEntity::class, parentColumns = ["id"], childColumns = ["deviceId"]),
     ],
-    indices = [Index("scheduleId"), Index("shiftId"), Index("userId"), Index("deviceId"), Index("status")],
+    indices = [Index("scheduleId"), Index("shiftId"), Index("userId"), Index("status"), Index("scheduledWindowStartEpochMillis")],
 )
 data class PatrolExecutionEntity(
     @PrimaryKey val id: String,
@@ -254,15 +229,11 @@ data class PatrolExecutionEntity(
 @Entity(
     tableName = "checkpoint_visits",
     foreignKeys = [
-        ForeignKey(entity = PatrolExecutionEntity::class, parentColumns = ["id"], childColumns = ["executionId"]),
+        ForeignKey(entity = PatrolExecutionEntity::class, parentColumns = ["id"], childColumns = ["executionId"], onDelete = ForeignKey.CASCADE),
         ForeignKey(entity = CheckpointEntity::class, parentColumns = ["id"], childColumns = ["checkpointId"]),
         ForeignKey(entity = QrCredentialEntity::class, parentColumns = ["id"], childColumns = ["qrCredentialId"]),
     ],
-    indices = [
-        Index(value = ["executionId", "checkpointId"], unique = true),
-        Index("checkpointId"),
-        Index("qrCredentialId"),
-    ],
+    indices = [Index("executionId"), Index("checkpointId"), Index("qrCredentialId")],
 )
 data class CheckpointVisitEntity(
     @PrimaryKey val id: String,
@@ -275,24 +246,17 @@ data class CheckpointVisitEntity(
     val suspicionReason: String? = null,
 )
 
-@Entity(
-    tableName = "occurrences",
-    foreignKeys = [
-        ForeignKey(entity = PatrolExecutionEntity::class, parentColumns = ["id"], childColumns = ["executionId"]),
-    ],
-    indices = [Index("executionId"), Index("checkpointId")],
-)
+@Entity(tableName = "occurrences", indices = [Index("executionId"), Index("checkpointId")])
 data class OccurrenceEntity(
     @PrimaryKey val id: String,
     val executionId: String,
     val checkpointId: String? = null,
-    val category: String,
+    val type: String,
     val description: String,
-    val localAttachmentPath: String? = null,
     val createdAtEpochMillis: Long,
 )
 
-@Entity(tableName = "alerts", indices = [Index("type"), Index("resolved"), Index("createdAtEpochMillis")])
+@Entity(tableName = "alerts", indices = [Index("createdAtEpochMillis"), Index("resolved")])
 data class AlertEntity(
     @PrimaryKey val id: String,
     val type: String,
@@ -305,22 +269,17 @@ data class AlertEntity(
     val resolvedAtEpochMillis: Long? = null,
 )
 
-@Entity(tableName = "audit_logs", indices = [Index("actorUserId"), Index("entityType"), Index("createdAtEpochMillis")])
+@Entity(tableName = "audit_logs", indices = [Index("createdAtEpochMillis")])
 data class AuditLogEntity(
     @PrimaryKey val id: String,
-    val actorUserId: String,
-    val operation: String,
+    val action: String,
     val entityType: String,
     val entityId: String,
-    val previousValueJson: String? = null,
-    val newValueJson: String? = null,
+    val metadataJson: String? = null,
     val createdAtEpochMillis: Long,
 )
 
-@Entity(
-    tableName = "outbox_events",
-    indices = [Index(value = ["eventId"], unique = true), Index("status"), Index("createdAtEpochMillis")],
-)
+@Entity(tableName = "outbox_events", indices = [Index("status"), Index("createdAtEpochMillis")])
 data class OutboxEventEntity(
     @PrimaryKey val eventId: String,
     val aggregateType: String,
