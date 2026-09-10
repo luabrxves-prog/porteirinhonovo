@@ -7,7 +7,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
 object PinSecurity {
-    private const val Iterations = 120_000
+    private const val LocalIterations = 120_000
+    private const val BackendIterations = 210_000
     private const val KeyLengthBits = 256
 
     data class Hash(val saltBase64: String, val hashBase64: String)
@@ -16,19 +17,40 @@ object PinSecurity {
         val salt = ByteArray(16).also(SecureRandom()::nextBytes)
         return Hash(
             saltBase64 = Base64.getEncoder().encodeToString(salt),
-            hashBase64 = Base64.getEncoder().encodeToString(derive(pin, salt)),
+            hashBase64 = Base64.getEncoder().encodeToString(derive(pin, salt, LocalIterations)),
         )
     }
 
-    fun verify(pin: CharArray, saltBase64: String, expectedHashBase64: String): Boolean {
-        val salt = Base64.getDecoder().decode(saltBase64)
-        val expected = Base64.getDecoder().decode(expectedHashBase64)
-        val actual = derive(pin, salt)
+    fun verify(
+        pin: CharArray,
+        encodedSalt: String,
+        encodedHash: String,
+        encoding: String = "AUTO",
+        iterations: Int = 0,
+    ): Boolean {
+        val resolvedEncoding = when {
+            encoding != "AUTO" -> encoding.uppercase()
+            encodedSalt.matches(Regex("^[0-9a-fA-F]{32}$")) && encodedHash.matches(Regex("^[0-9a-fA-F]{64}$")) -> "HEX"
+            else -> "BASE64"
+        }
+        val resolvedIterations = when {
+            iterations > 0 -> iterations
+            resolvedEncoding == "HEX" -> BackendIterations
+            else -> LocalIterations
+        }
+        val salt = decode(encodedSalt, resolvedEncoding)
+        val expected = decode(encodedHash, resolvedEncoding)
+        val actual = derive(pin, salt, resolvedIterations)
         return MessageDigest.isEqual(expected, actual)
     }
 
-    private fun derive(pin: CharArray, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin, salt, Iterations, KeyLengthBits)
+    private fun decode(value: String, encoding: String): ByteArray = when (encoding) {
+        "HEX" -> value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        else -> Base64.getDecoder().decode(value)
+    }
+
+    private fun derive(pin: CharArray, salt: ByteArray, iterations: Int): ByteArray {
+        val spec = PBEKeySpec(pin, salt, iterations, KeyLengthBits)
         return try {
             SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         } finally {
