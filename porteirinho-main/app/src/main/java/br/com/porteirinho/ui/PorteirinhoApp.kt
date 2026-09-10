@@ -54,6 +54,7 @@ fun PorteirinhoApp(viewModel: AppViewModel) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val screen = state.screen) {
                 AppScreen.AreaChoice -> AreaChoiceScreen(viewModel::chooseArea)
+                AppScreen.AdminLogin -> AdminLoginScreen(state.busy, viewModel::loginAdmin, viewModel::back)
                 is AppScreen.ProfileChoice -> ProfileChoiceScreen(screen.role, users.filter { it.role == screen.role }, viewModel::chooseProfile, viewModel::back)
                 is AppScreen.PinLogin -> PinLoginScreen(users.firstOrNull { it.id == screen.userId }, state.busy, { viewModel.login(screen.userId, it) }, viewModel::back)
                 is AppScreen.ChangePin -> ChangePinScreen(state.busy, { viewModel.changePin(screen.userId, it) }, viewModel::back)
@@ -79,7 +80,7 @@ fun PorteirinhoApp(viewModel: AppViewModel) {
                     onSchedules = viewModel::openAdminSchedules,
                     onGatekeepers = viewModel::openAdminGatekeepers,
                     onReports = viewModel::openAdminReports,
-                    onExit = viewModel::back,
+                    onExit = viewModel::logoutAdmin,
                 )
                 AppScreen.AdminAlerts -> AlertsScreen(alerts, viewModel::resolveAlert, viewModel::back)
                 AppScreen.AdminPoints -> AdminPointsScreen(checkpoints, state.busy, viewModel::addAdminPoint, viewModel::openAdminQr, viewModel::back)
@@ -125,6 +126,42 @@ private fun AccessCard(title: String, subtitle: String, onClick: () -> Unit) {
 }
 
 @Composable
+private fun AdminLoginScreen(busy: Boolean, onLogin: (String, String) -> Unit, onBack: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    Screen("Administração", onBack) {
+        item {
+            Text("Entre com seu acesso administrativo.", style = MaterialTheme.typography.bodyLarge)
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it.trim().take(160) },
+                label = { Text("E-mail") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it.take(128) },
+                label = { Text("Senha") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { onLogin(email, password) },
+                enabled = email.contains('@') && password.isNotBlank() && !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Entrar") }
+        }
+    }
+}
+
+@Composable
 private fun ProfileChoiceScreen(role: String, users: List<UserEntity>, onProfile: (String) -> Unit, onBack: () -> Unit) {
     Screen(title = if (role == UserRole.ADMIN) "Administração" else "Quem está na portaria?", onBack = onBack) {
         if (users.isEmpty()) item { Text("Nenhum perfil ativo.") }
@@ -146,9 +183,9 @@ private fun PinLoginScreen(user: UserEntity?, busy: Boolean, onLogin: (String) -
         item {
             user?.let { Text(it.displayName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
             Spacer(Modifier.height(20.dp))
-            OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(8) }, label = { Text("PIN") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(6) }, label = { Text("PIN") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
-            Button({ onLogin(pin) }, enabled = pin.length >= 4 && !busy, modifier = Modifier.fillMaxWidth()) { Text("Entrar") }
+            Button({ onLogin(pin) }, enabled = pin.length == 6 && !busy, modifier = Modifier.fillMaxWidth()) { Text("Entrar") }
         }
     }
 }
@@ -157,15 +194,15 @@ private fun PinLoginScreen(user: UserEntity?, busy: Boolean, onLogin: (String) -
 private fun ChangePinScreen(busy: Boolean, onSave: (String) -> Unit, onBack: () -> Unit) {
     var pin by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    Screen("Crie sua senha", onBack) {
+    Screen("Crie seu PIN", onBack) {
         item {
-            Text("Este é seu primeiro acesso. Defina uma senha numérica pessoal para os próximos acessos.")
+            Text("Este é seu primeiro acesso. Defina um PIN pessoal de 6 números para os próximos acessos.")
             Spacer(Modifier.height(16.dp))
-            OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(8) }, label = { Text("Nova senha") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(6) }, label = { Text("Novo PIN") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(confirm, { confirm = it.filter(Char::isDigit).take(8) }, label = { Text("Confirmar senha") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(confirm, { confirm = it.filter(Char::isDigit).take(6) }, label = { Text("Confirmar PIN") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
-            Button({ onSave(pin) }, enabled = pin.length >= 4 && pin == confirm && !busy, modifier = Modifier.fillMaxWidth()) { Text("Salvar senha") }
+            Button({ onSave(pin) }, enabled = pin.length == 6 && pin == confirm && !busy, modifier = Modifier.fillMaxWidth()) { Text("Salvar PIN") }
         }
     }
 }
@@ -271,7 +308,7 @@ private fun AdminDashboardScreen(
             }
         }
         item { AdminCard("Central de alertas", "$unresolvedAlerts não resolvidos", onAlerts) }
-        item { AdminCard("Pontos de ronda", "15 pontos fixos + pontos extras e QR Codes", onPoints) }
+        item { AdminCard("Pontos de ronda", "Pontos fixos, extras e QR Codes", onPoints) }
         item { AdminCard("4 rondas fixas", "Alterar nome e horário", onSchedules) }
         item { AdminCard("Porteiros", "Cadastrar e acompanhar primeiro acesso", onGatekeepers) }
         item { AdminCard("Relatórios", "Excel de 30, 90 ou 120 dias", onReports) }
