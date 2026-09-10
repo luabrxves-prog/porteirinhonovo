@@ -28,10 +28,10 @@ interface UserDao {
 @Dao
 interface DirectoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertLocation(node: LocationNodeEntity)
+    fun upsertLocation(node: LocationNodeEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertCheckpoint(checkpoint: CheckpointEntity)
+    fun upsertCheckpoint(checkpoint: CheckpointEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertQrCredential(credential: QrCredentialEntity)
