@@ -24,15 +24,13 @@ class AdminRemoteClient(private val context: Context) {
     data class GatekeeperCreated(val id: String?, val name: String, val temporaryPin: String)
 
     fun requestSyncNow() = SyncScheduler.runNow(context)
-
     fun hasSession(): Boolean = accessToken() != null
 
     suspend fun login(email: String, password: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             require(email.isNotBlank() && password.isNotBlank()) { "Informe e-mail e senha." }
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/token?grant_type=password"
-            val body = JSONObject().put("email", email.trim()).put("password", password).toString()
-            val response = request(endpoint, "POST", body, bearer = null)
+            val response = request(endpoint, "POST", JSONObject().put("email", email.trim()).put("password", password).toString(), bearer = null)
             check(response.code in 200..299) { "E-mail ou senha inválidos." }
             val json = JSONObject(response.body)
             val role = json.optJSONObject("user")?.optJSONObject("app_metadata")?.optString("role").orEmpty()
@@ -51,8 +49,8 @@ class AdminRemoteClient(private val context: Context) {
         check(response.code in 200..299) { "Não foi possível resolver o alerta." }
     }
 
-    suspend fun createPoint(name: String, floorId: String): Result<Unit> = runCatching {
-        val response = postAdmin("admin-point", JSONObject().put("name", name.trim()).put("floor_id", floorId))
+    suspend fun createPoint(name: String): Result<Unit> = runCatching {
+        val response = postAdmin("admin-point", JSONObject().put("name", name.trim()))
         check(response.code in 200..299) {
             if (response.body.contains("PATROL_ACTIVE")) "Aguarde a ronda em andamento terminar para alterar os pontos."
             else "Não foi possível cadastrar o ponto."
@@ -63,24 +61,14 @@ class AdminRemoteClient(private val context: Context) {
         val response = postAdmin("admin-qr", JSONObject().put("action", "get_active").put("checkpoint_id", checkpointId))
         check(response.code in 200..299) { "Não foi possível carregar o QR Code." }
         val qr = JSONObject(response.body).optJSONObject("qr") ?: error("Este ponto ainda não possui QR Code ativo.")
-        QrPayload(
-            checkpointId = checkpointId,
-            credentialId = qr.getString("qr_token_id"),
-            version = qr.optInt("version", 1),
-            rawPayload = qr.getString("token_value"),
-        )
+        QrPayload(checkpointId, qr.getString("qr_token_id"), qr.optInt("version", 1), qr.getString("token_value"))
     }
 
     suspend fun replaceQr(checkpointId: String): Result<QrPayload> = runCatching {
         val response = postAdmin("admin-qr", JSONObject().put("action", "replace").put("checkpoint_id", checkpointId))
         check(response.code in 200..299) { "Não foi possível substituir o QR Code." }
         val json = JSONObject(response.body)
-        QrPayload(
-            checkpointId = checkpointId,
-            credentialId = json.getString("qr_token_id"),
-            version = json.optInt("version", 1),
-            rawPayload = json.getString("token_value"),
-        )
+        QrPayload(checkpointId, json.getString("qr_token_id"), json.optInt("version", 1), json.getString("token_value"))
     }
 
     suspend fun createGatekeeper(name: String): Result<GatekeeperCreated> = runCatching {
@@ -96,10 +84,7 @@ class AdminRemoteClient(private val context: Context) {
     }
 
     suspend fun updateSchedule(scheduleId: String, name: String, startMinute: Int): Result<Unit> = runCatching {
-        val response = postAdmin(
-            "admin-schedules",
-            JSONObject().put("patrol_template_id", scheduleId).put("name", name.trim()).put("start_minute", startMinute),
-        )
+        val response = postAdmin("admin-schedules", JSONObject().put("patrol_template_id", scheduleId).put("name", name.trim()).put("start_minute", startMinute))
         check(response.code in 200..299) { "Não foi possível atualizar a ronda." }
     }
 
@@ -109,8 +94,7 @@ class AdminRemoteClient(private val context: Context) {
             val response = postAdmin("admin-reports", JSONObject().put("days", days))
             check(response.code in 200..299) { "Não foi possível gerar o relatório." }
             val json = JSONObject(response.body)
-            val fileName = json.optString("file_name").ifBlank { "Porteirinho_${days}d.xlsx" }
-                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val fileName = json.optString("file_name").ifBlank { "Porteirinho_${days}d.xlsx" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
             val bytes = Base64.decode(json.getString("file_base64"), Base64.DEFAULT)
             File(context.cacheDir, fileName).also { it.writeBytes(bytes) }
         }
@@ -151,8 +135,7 @@ class AdminRemoteClient(private val context: Context) {
         }
         if (body.isNotEmpty()) connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
         val code = connection.responseCode
-        val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
-            ?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
         connection.disconnect()
         return HttpResult(code, text)
     }
