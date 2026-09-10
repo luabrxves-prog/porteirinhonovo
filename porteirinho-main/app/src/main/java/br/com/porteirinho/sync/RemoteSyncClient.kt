@@ -11,7 +11,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Duration
 import java.time.LocalTime
 
 class RemoteSyncClient(
@@ -77,7 +76,6 @@ class RemoteSyncClient(
         }
         when (event.eventType) {
             "SHIFT_STARTED" -> {
-                val shift = database.patrolDao().activeShift(JSONObject(event.payloadJson).optString("user_id"))
                 val userId = JSONObject(event.payloadJson).optString("user_id")
                 payload.put("guard_id", userId)
                     .put("started_at_local", iso(event.createdAtEpochMillis))
@@ -100,8 +98,7 @@ class RemoteSyncClient(
                 val visit = database.patrolDao().visits(event.aggregateId).firstOrNull { it.id == visitId } ?: return null
                 val execution = database.patrolDao().findExecution(event.aggregateId) ?: return null
                 val runEvent = database.outboxDao().findEvent(execution.id, "PATROL_STARTED") ?: return null
-                val qr = database.directoryDao().activeQrForCheckpoint(visit.checkpointId)
-                    ?: return null
+                val qr = database.directoryDao().findQrById(visit.qrCredentialId) ?: return null
                 payload.put("guard_id", execution.userId)
                     .put("run_client_event_id", runEvent.eventId)
                     .put("token_hash", qr.tokenHash)
@@ -120,11 +117,10 @@ class RemoteSyncClient(
                 val raw = JSONObject(event.payloadJson)
                 val shiftId = raw.optString("shift_id")
                 val shiftEvent = database.outboxDao().findEvent(shiftId, "SHIFT_STARTED") ?: return null
-                val shift = database.patrolDao().anyActiveShift()
-                val userId = shift?.userId ?: raw.optString("user_id")
-                payload.put("guard_id", userId)
+                val shift = database.patrolDao().findShift(shiftId) ?: return null
+                payload.put("guard_id", shift.userId)
                     .put("shift_client_event_id", shiftEvent.eventId)
-                    .put("ended_at_local", iso(event.createdAtEpochMillis))
+                    .put("ended_at_local", iso(shift.endedAtEpochMillis ?: event.createdAtEpochMillis))
             }
         }
         return JSONObject().put("client_event_id", event.eventId).put("type", type).put("payload", payload)
