@@ -12,5 +12,5 @@ class AppContainer(context: Context) {
     val deviceIdentity = DeviceIdentity(context)
     val repository: PatrolRepository = PatrolRepository(database, deviceIdentity)
     val remoteSyncClient: RemoteSyncClient = RemoteSyncClient(context, database, deviceIdentity)
-    val adminRemoteClient: AdminRemoteClient = AdminRemoteClient(context, deviceIdentity)
+    val adminRemoteClient: AdminRemoteClient = AdminRemoteClient(context)
 }
