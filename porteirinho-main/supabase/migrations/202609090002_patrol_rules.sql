@@ -13,10 +13,16 @@ create unique index if not exists checkpoints_fixed_system_key_idx
     where system_key is not null and archived_at is null;
 
 alter table public.patrol_schedules
-    add column if not exists fixed_slot smallint;
+    add column if not exists fixed_slot smallint,
+    add column if not exists start_tolerance_minutes integer not null default 10,
+    add column if not exists end_tolerance_minutes integer not null default 10,
+    add column if not exists target_duration_minutes integer not null default 60;
 
 alter table public.patrol_schedules
-    add constraint patrol_schedules_fixed_slot_check check (fixed_slot is null or fixed_slot between 1 and 4);
+    add constraint patrol_schedules_fixed_slot_check check (fixed_slot is null or fixed_slot between 1 and 4),
+    add constraint patrol_schedules_start_tolerance_check check (start_tolerance_minutes between 0 and 180),
+    add constraint patrol_schedules_end_tolerance_check check (end_tolerance_minutes between 0 and 180),
+    add constraint patrol_schedules_target_duration_check check (target_duration_minutes between 1 and 720);
 
 create unique index if not exists patrol_schedules_four_fixed_slots_idx
     on public.patrol_schedules(organization_id, fixed_slot)
