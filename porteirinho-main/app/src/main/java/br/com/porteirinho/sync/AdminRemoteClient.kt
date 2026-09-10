@@ -22,6 +22,33 @@ class AdminRemoteClient(
         val rawPayload: String,
     )
 
+    suspend fun createPoint(name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Cadastro de ponto precisa do servidor configurado." }
+            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-point"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                doInput = true
+                doOutput = true
+                setHeaders(token)
+            }
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
+                it.write(JSONObject().put("name", name.trim()).toString())
+            }
+            val code = connection.responseCode
+            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            connection.disconnect()
+            check(code in 200..299) {
+                if (response.contains("patrol_active")) "Aguarde a ronda em andamento terminar para alterar os pontos."
+                else "Não foi possível cadastrar o ponto. HTTP $code ${response.take(160)}"
+            }
+        }
+    }
+
     suspend fun getQr(checkpointId: String): Result<QrPayload> = qrOperation("get", checkpointId)
 
     suspend fun replaceQr(checkpointId: String): Result<QrPayload> = qrOperation("replace", checkpointId)
