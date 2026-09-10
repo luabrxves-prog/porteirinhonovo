@@ -1,0 +1,46 @@
+import { createClient } from "npm:@supabase/supabase-js@2.57.4";
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+const sha256 = async (value: string) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+Deno.serve(async (request) => {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const publicId = request.headers.get("x-device-id");
+  const token = request.headers.get("x-device-token");
+  if (!publicId || !token) return json({ error: "device_credentials_required" }, 401);
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  );
+
+  const { data: device, error: deviceError } = await supabase.from("devices")
+    .select("id,organization_id,active,archived_at,api_token_hash,can_admin")
+    .eq("public_id", publicId)
+    .maybeSingle();
+
+  if (deviceError) return json({ error: "device_lookup_failed" }, 503);
+  if (!device || !device.active || device.archived_at) return json({ error: "device_not_authorized" }, 403);
+  if ((await sha256(token)) !== device.api_token_hash) return json({ error: "device_token_invalid" }, 403);
+  if (!device.can_admin) return json({ error: "admin_device_required" }, 403);
+
+  let body: { alert_id?: string };
+  try { body = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+  if (!body.alert_id) return json({ error: "invalid_request" }, 422);
+
+  const { data, error } = await supabase.from("alerts")
+    .update({ resolved: true, resolved_at: new Date().toISOString() })
+    .eq("id", body.alert_id)
+    .eq("organization_id", device.organization_id)
+    .select("id")
+    .maybeSingle();
+
+  if (error) return json({ error: "alert_update_failed", detail: error.code }, 500);
+  if (!data) return json({ error: "alert_not_found" }, 404);
+
+  return json({ resolved: true, alert_id: body.alert_id });
+});
