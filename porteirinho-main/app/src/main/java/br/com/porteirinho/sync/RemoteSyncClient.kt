@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
 import java.time.LocalTime
 
 class RemoteSyncClient(
@@ -41,14 +42,11 @@ class RemoteSyncClient(
             val response = responseText(connection, code)
             connection.disconnect()
             check(code in 200..299) {
-                when {
-                    response.contains("PIN_TEMPORARILY_LOCKED") -> "Acesso temporariamente bloqueado. Tente novamente mais tarde."
-                    else -> "Não foi possível validar o acesso no servidor."
-                }
+                if (response.contains("PIN_TEMPORARILY_LOCKED")) "Acesso temporariamente bloqueado. Tente novamente mais tarde."
+                else "Não foi possível validar o acesso no servidor."
             }
             val json = JSONObject(response)
-            val session = json.optString("guard_session").takeIf(String::isNotBlank)
-                ?: error("Sessão do porteiro não foi criada.")
+            val session = json.optString("guard_session").takeIf(String::isNotBlank) ?: error("Sessão do porteiro não foi criada.")
             secureStore.put(KeyGuardSession, session.toByteArray(Charsets.UTF_8))
             secureStore.put(KeyGuardSessionUser, userId.toByteArray(Charsets.UTF_8))
             json.optBoolean("must_change_pin", false)
@@ -187,9 +185,14 @@ class RemoteSyncClient(
         val links = root.optJSONArray("patrol_checkpoints") ?: JSONArray()
         val qrs = root.optJSONArray("qr_tokens") ?: JSONArray()
         val assignments = root.optJSONArray("assignments") ?: JSONArray()
+        val alerts = root.optJSONArray("alerts") ?: JSONArray()
 
         context.getSharedPreferences("porteirinho_backend_cache", Context.MODE_PRIVATE)
-            .edit().putString("windows", windows.toString()).putString("timezone", building.optString("timezone", "America/Sao_Paulo")).apply()
+            .edit()
+            .putString("windows", windows.toString())
+            .putString("timezone", building.optString("timezone", "America/Sao_Paulo"))
+            .putLong("sync_version", root.optLong("sync_version", 0L))
+            .apply()
 
         database.withTransaction {
             database.directoryDao().upsertLocation(LocationNodeEntity(building.getString("id"), null, "PROPERTY", building.getString("name"), updatedAtEpochMillis = now))
@@ -212,19 +215,27 @@ class RemoteSyncClient(
                 ))
             }
 
-            val fixedPatrols = (0 until patrols.length()).map { patrols.getJSONObject(it) }
-                .filter { it.optBoolean("system_fixed", true) }
+            val fixedPatrols = (0 until patrols.length())
+                .map { patrols.getJSONObject(it) }
+                .filter { it.optBoolean("system_fixed", false) }
+                .mapNotNull { patrol ->
+                    val related = (0 until windows.length()).map { windows.getJSONObject(it) }
+                        .filter { it.getString("patrol_template_id") == patrol.getString("id") }
+                    val first = related.minByOrNull { minuteOfDay(it.getString("start_time")) } ?: return@mapNotNull null
+                    Triple(patrol, related, first)
+                }
+                .sortedBy { minuteOfDay(it.third.getString("start_time")) }
                 .take(4)
-            fixedPatrols.forEachIndexed { index, patrol ->
-                val templateId = patrol.getString("id")
-                val related = (0 until windows.length()).map { windows.getJSONObject(it) }.filter { it.getString("patrol_template_id") == templateId }
-                val first = related.firstOrNull() ?: return@forEachIndexed
+
+            fixedPatrols.forEachIndexed { index, item ->
+                val patrol = item.first
+                val related = item.second
+                val first = item.third
                 val start = minuteOfDay(first.getString("start_time"))
                 val end = minuteOfDay(first.getString("end_time"))
                 val weekdays = related.map { it.getInt("day_of_week") }.distinct().sorted().joinToString(",")
-                val duration = durationMinutes(start, end)
                 database.scheduleDao().upsertSchedule(PatrolScheduleEntity(
-                    id = templateId,
+                    id = patrol.getString("id"),
                     propertyId = building.getString("id"),
                     name = patrol.getString("name"),
                     weekdaysCsv = weekdays.ifBlank { "1,2,3,4,5,6,7" },
@@ -234,7 +245,7 @@ class RemoteSyncClient(
                     fixedSlot = index + 1,
                     startToleranceMinutes = first.optInt("late_tolerance_minutes", 10),
                     endToleranceMinutes = first.optInt("late_tolerance_minutes", 10),
-                    targetDurationMinutes = duration,
+                    targetDurationMinutes = durationMinutes(start, end),
                     updatedAtEpochMillis = now,
                 ))
             }
@@ -260,8 +271,11 @@ class RemoteSyncClient(
             for (i in 0 until qrs.length()) {
                 val row = qrs.getJSONObject(i)
                 database.directoryDao().upsertQrCredential(QrCredentialEntity(
-                    id = row.getString("qr_token_id"), checkpointId = row.getString("checkpoint_id"),
-                    tokenHash = row.getString("token_hash"), version = row.optInt("version", 1), issuedAtEpochMillis = now,
+                    id = row.getString("qr_token_id"),
+                    checkpointId = row.getString("checkpoint_id"),
+                    tokenHash = row.getString("token_hash"),
+                    version = row.optInt("version", 1),
+                    issuedAtEpochMillis = parseInstant(row.optString("issued_at")) ?: now,
                 ))
             }
 
@@ -272,11 +286,29 @@ class RemoteSyncClient(
             }
 
             database.scheduleDao().clearAssignees()
-            val windowToTemplate = (0 until windows.length()).associate { windows.getJSONObject(it).getString("id") to windows.getJSONObject(it).getString("patrol_template_id") }
+            val windowToTemplate = (0 until windows.length()).associate {
+                windows.getJSONObject(it).getString("id") to windows.getJSONObject(it).getString("patrol_template_id")
+            }
             for (i in 0 until assignments.length()) {
                 val row = assignments.getJSONObject(i)
                 val scheduleId = windowToTemplate[row.getString("schedule_window_id")] ?: continue
                 database.scheduleDao().upsertAssignee(ScheduleAssigneeEntity(scheduleId, row.getString("guard_id")))
+            }
+
+            for (i in 0 until alerts.length()) {
+                val row = alerts.getJSONObject(i)
+                val resolvedAt = parseInstant(row.optString("resolved_at"))
+                database.alertDao().insert(AlertEntity(
+                    id = row.getString("id"),
+                    type = row.optString("type", "ALERTA"),
+                    description = row.optString("description", "Alerta operacional"),
+                    userId = row.optString("guard_id").takeIf { it.isNotBlank() && it != "null" },
+                    executionId = row.optString("patrol_run_id").takeIf { it.isNotBlank() && it != "null" },
+                    deviceId = row.optString("device_id").takeIf { it.isNotBlank() && it != "null" },
+                    createdAtEpochMillis = parseInstant(row.optString("created_at")) ?: now,
+                    resolved = resolvedAt != null,
+                    resolvedAtEpochMillis = resolvedAt,
+                ))
             }
         }
     }
@@ -285,7 +317,7 @@ class RemoteSyncClient(
         val raw = context.getSharedPreferences("porteirinho_backend_cache", Context.MODE_PRIVATE).getString("windows", null) ?: return null
         val windows = JSONArray(raw)
         val zoneId = java.time.ZoneId.of(context.getSharedPreferences("porteirinho_backend_cache", Context.MODE_PRIVATE).getString("timezone", "America/Sao_Paulo"))
-        val day = java.time.Instant.ofEpochMilli(scheduledStartMillis).atZone(zoneId).dayOfWeek.value
+        val day = Instant.ofEpochMilli(scheduledStartMillis).atZone(zoneId).dayOfWeek.value
         for (i in 0 until windows.length()) {
             val row = windows.getJSONObject(i)
             if (row.getString("patrol_template_id") == templateId && row.getInt("day_of_week") == day) return row.getString("id")
@@ -299,7 +331,11 @@ class RemoteSyncClient(
         guardSession: String? = null,
     ): HttpURLConnection =
         (URL(BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/$functionName").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 15_000; readTimeout = 25_000; doInput = true; doOutput = true
+            requestMethod = "POST"
+            connectTimeout = 15_000
+            readTimeout = 25_000
+            doInput = true
+            doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("apikey", BuildConfig.SUPABASE_PUBLISHABLE_KEY)
             setRequestProperty("X-Device-Id", credentials.deviceId)
@@ -312,8 +348,13 @@ class RemoteSyncClient(
 
     private fun minuteOfDay(value: String): Int { val t = LocalTime.parse(value.take(8)); return t.hour * 60 + t.minute }
     private fun durationMinutes(start: Int, end: Int): Int = if (end >= start) end - start else 1440 - start + end
-    private fun iso(epochMillis: Long): String = java.time.Instant.ofEpochMilli(epochMillis).toString()
-    private fun unwrapObject(value: Any?): JSONObject? = when (value) { is JSONObject -> value; is JSONArray -> if (value.length() > 0) value.optJSONObject(0) else null; else -> null }
+    private fun iso(epochMillis: Long): String = Instant.ofEpochMilli(epochMillis).toString()
+    private fun parseInstant(value: String): Long? = runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
+    private fun unwrapObject(value: Any?): JSONObject? = when (value) {
+        is JSONObject -> value
+        is JSONArray -> if (value.length() > 0) value.optJSONObject(0) else null
+        else -> null
+    }
 
     private companion object {
         const val KeyGuardSession = "guard_session"
