@@ -230,7 +230,10 @@ class AppViewModel(
 
     fun updateAdminSchedule(scheduleId: String, name: String, startMinuteOfDay: Int) = launchBusy {
         repository.updateFixedSchedule(scheduleId, name, startMinuteOfDay)
-            .onSuccess { showMessage("Ronda atualizada.") }
+            .onSuccess {
+                adminRemoteClient.requestSyncNow()
+                showMessage("Ronda atualizada.")
+            }
             .onFailure { showMessage(it.message ?: "Não foi possível atualizar a ronda.") }
     }
 
@@ -238,6 +241,7 @@ class AppViewModel(
         repository.createGatekeeper(displayName)
             .onSuccess { (_, pin) ->
                 _uiState.value = _uiState.value.copy(generatedGatekeeperPin = pin)
+                adminRemoteClient.requestSyncNow()
                 showMessage("Porteiro cadastrado. Entregue o PIN temporário para o primeiro acesso.")
             }
             .onFailure { showMessage(it.message ?: "Não foi possível cadastrar o porteiro.") }
@@ -258,7 +262,15 @@ class AppViewModel(
 
     fun clearReportFile() { _uiState.value = _uiState.value.copy(reportFilePath = null) }
 
-    fun resolveAlert(id: String) = viewModelScope.launch { repository.resolveAlert(id) }
+    fun resolveAlert(id: String) = launchBusy {
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            repository.resolveAlert(id)
+        } else {
+            adminRemoteClient.resolveAlert(id).getOrThrow()
+            remoteSyncClient.pullSnapshot().getOrThrow()
+        }
+        showMessage("Alerta marcado como resolvido.")
+    }
 
     fun back() {
         val next = when (_uiState.value.screen) {
