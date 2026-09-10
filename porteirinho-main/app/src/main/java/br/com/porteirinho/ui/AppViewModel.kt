@@ -25,6 +25,7 @@ sealed interface AppScreen {
     data class ProfileChoice(val role: String) : AppScreen
     data class PinLogin(val userId: String) : AppScreen
     data class ChangePin(val userId: String) : AppScreen
+    data object AdminLogin : AppScreen
     data object GatekeeperHome : AppScreen
     data object Patrol : AppScreen
     data object Scanner : AppScreen
@@ -77,7 +78,26 @@ class AppViewModel(
         }
     }
 
-    fun chooseArea(role: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), message = null) }
+    fun chooseArea(role: String) {
+        val next = if (role == UserRole.ADMIN && BuildConfig.SUPABASE_URL.isNotBlank()) {
+            if (adminRemoteClient.hasSession()) AppScreen.AdminDashboard else AppScreen.AdminLogin
+        } else {
+            AppScreen.ProfileChoice(role)
+        }
+        _uiState.value = _uiState.value.copy(screen = next, message = null)
+    }
+
+    fun loginAdmin(email: String, password: String) = launchBusy {
+        adminRemoteClient.login(email, password).getOrThrow()
+        remoteSyncClient.pullSnapshot()
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = null)
+    }
+
+    fun logoutAdmin() {
+        adminRemoteClient.logout()
+        _uiState.value = AppUiState(screen = AppScreen.AreaChoice)
+    }
+
     fun chooseProfile(userId: String) { _uiState.value = _uiState.value.copy(screen = AppScreen.PinLogin(userId), message = null) }
 
     fun login(userId: String, pin: String) = launchBusy {
@@ -85,7 +105,20 @@ class AppViewModel(
             is LoginResult.Error -> showMessage(result.message)
             is LoginResult.Success -> {
                 val user = repository.user(result.userId)
-                if (result.mustChangePin) {
+                if (result.role == UserRole.GATEKEEPER && BuildConfig.SUPABASE_URL.isNotBlank()) {
+                    val onlineMustChange = remoteSyncClient.loginGuardOnline(result.userId, pin)
+                        .getOrElse { error ->
+                            if (result.mustChangePin) throw IllegalStateException(
+                                "Conecte este aparelho à internet para concluir o primeiro acesso. ${error.message.orEmpty()}".trim(),
+                            )
+                            false
+                        }
+                    if (result.mustChangePin || onlineMustChange) {
+                        _uiState.value = _uiState.value.copy(screen = AppScreen.ChangePin(result.userId), authenticatedUser = user)
+                    } else {
+                        enterGatekeeper(result.userId, user)
+                    }
+                } else if (result.mustChangePin) {
                     _uiState.value = _uiState.value.copy(screen = AppScreen.ChangePin(result.userId), authenticatedUser = user)
                 } else if (result.role == UserRole.ADMIN) {
                     _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
@@ -97,15 +130,19 @@ class AppViewModel(
     }
 
     fun changePin(userId: String, pin: String) = launchBusy {
-        repository.changePin(userId, pin).onSuccess {
-            val user = repository.user(userId)
-            if (user?.role == UserRole.ADMIN) {
-                _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
-            } else {
-                enterGatekeeper(userId, user)
-            }
-            showMessage("Senha definida com sucesso.")
-        }.onFailure { showMessage(it.message ?: "Não foi possível definir a senha.") }
+        val user = repository.user(userId) ?: error("Perfil não encontrado.")
+        if (BuildConfig.SUPABASE_URL.isNotBlank() && user.role == UserRole.GATEKEEPER) {
+            require(pin.length == 6 && pin.all(Char::isDigit)) { "O novo PIN deve conter exatamente 6 dígitos." }
+            remoteSyncClient.changeGuardPinOnline(userId, pin).getOrThrow()
+        }
+        repository.changePin(userId, pin).getOrThrow()
+        if (user.role == UserRole.ADMIN) {
+            _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
+        } else {
+            remoteSyncClient.pullSnapshot()
+            enterGatekeeper(userId, repository.user(userId))
+        }
+        showMessage("Senha definida com sucesso.")
     }
 
     private suspend fun enterGatekeeper(userId: String, user: UserEntity?) {
@@ -124,7 +161,8 @@ class AppViewModel(
         val user = requireUser()
         repository.startShift(user.id).onSuccess {
             _uiState.value = _uiState.value.copy(shiftActive = true, availablePatrols = repository.availablePatrols(user.id))
-            showMessage("Turno iniciado e registrado no aparelho.")
+            adminRemoteClient.requestSyncNow()
+            showMessage("Turno iniciado.")
         }.onFailure { showMessage(it.message ?: "Não foi possível iniciar o turno.") }
     }
 
@@ -132,6 +170,7 @@ class AppViewModel(
         val user = requireUser()
         repository.finishShift(user.id).onSuccess {
             _uiState.value = _uiState.value.copy(shiftActive = false, availablePatrols = emptyList())
+            adminRemoteClient.requestSyncNow()
             showMessage("Turno encerrado.")
         }.onFailure { showMessage(it.message ?: "Não foi possível encerrar o turno.") }
     }
@@ -142,7 +181,10 @@ class AppViewModel(
             RemoteSyncClient.ReservationResult.Reserved,
             RemoteSyncClient.ReservationResult.LocalDemo -> {
                 repository.startPatrol(user.id, scheduleId)
-                    .onSuccess { patrol -> _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol) }
+                    .onSuccess { patrol ->
+                        _uiState.value = _uiState.value.copy(screen = AppScreen.Patrol, activePatrol = patrol)
+                        adminRemoteClient.requestSyncNow()
+                    }
                     .onFailure { showMessage(it.message ?: "Não foi possível iniciar a ronda.") }
             }
             is RemoteSyncClient.ReservationResult.Conflict -> showMessage(reservation.message)
@@ -158,6 +200,7 @@ class AppViewModel(
         when (val result = repository.registerScan(patrol.executionId, rawValue)) {
             is ScanResult.Accepted -> {
                 _uiState.value = _uiState.value.copy(observationCheckpointId = result.checkpointId, observationCheckpointName = result.checkpointName)
+                adminRemoteClient.requestSyncNow()
                 showMessage(if (result.suspicious) "Ponto confirmado. A leitura gerou um alerta para auditoria." else "${result.checkpointName} confirmado.")
             }
             is ScanResult.AlreadyVisited -> showMessage("${result.checkpointName} já foi confirmado.")
@@ -172,6 +215,7 @@ class AppViewModel(
         val checkpointId = _uiState.value.observationCheckpointId ?: return@launchBusy
         repository.addOccurrence(patrol.executionId, checkpointId, text).onSuccess {
             _uiState.value = _uiState.value.copy(observationCheckpointId = null, observationCheckpointName = null)
+            adminRemoteClient.requestSyncNow()
             showMessage("Observação registrada e enviada para a central de alertas.")
         }.onFailure { showMessage(it.message ?: "Não foi possível registrar a observação.") }
     }
@@ -183,6 +227,7 @@ class AppViewModel(
         repository.finishPatrol(patrol.executionId).onSuccess { status ->
             val user = requireUser()
             _uiState.value = _uiState.value.copy(screen = AppScreen.GatekeeperHome, activePatrol = null, observationCheckpointId = null, observationCheckpointName = null, availablePatrols = repository.availablePatrols(user.id))
+            adminRemoteClient.requestSyncNow()
             showMessage("Ronda finalizada: $status.")
         }.onFailure { showMessage(it.message ?: "Não foi possível finalizar a ronda.") }
     }
@@ -217,9 +262,7 @@ class AppViewModel(
     fun replaceAdminQr(checkpointId: String) = launchBusy {
         if (BuildConfig.SUPABASE_URL.isBlank()) {
             val raw = repository.replaceQr(checkpointId).getOrThrow()
-            _uiState.value = _uiState.value.copy(
-                adminQrPayload = AdminRemoteClient.QrPayload(checkpointId, "demo", 1, raw),
-            )
+            _uiState.value = _uiState.value.copy(adminQrPayload = AdminRemoteClient.QrPayload(checkpointId, "demo", 1, raw))
         } else {
             val qr = adminRemoteClient.replaceQr(checkpointId).getOrThrow()
             _uiState.value = _uiState.value.copy(adminQrPayload = qr)
@@ -229,27 +272,27 @@ class AppViewModel(
     }
 
     fun updateAdminSchedule(scheduleId: String, name: String, startMinuteOfDay: Int) = launchBusy {
-        repository.updateFixedSchedule(scheduleId, name, startMinuteOfDay)
-            .onSuccess {
-                adminRemoteClient.requestSyncNow()
-                showMessage("Ronda atualizada.")
-            }
-            .onFailure { showMessage(it.message ?: "Não foi possível atualizar a ronda.") }
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            repository.updateFixedSchedule(scheduleId, name, startMinuteOfDay).getOrThrow()
+        } else {
+            adminRemoteClient.updateSchedule(scheduleId, name, startMinuteOfDay).getOrThrow()
+            remoteSyncClient.pullSnapshot().getOrThrow()
+        }
+        showMessage("Ronda atualizada.")
     }
 
     fun createAdminGatekeeper(displayName: String) = launchBusy {
-        repository.createGatekeeper(displayName)
-            .onSuccess { (_, pin) ->
-                _uiState.value = _uiState.value.copy(generatedGatekeeperPin = pin)
-                adminRemoteClient.requestSyncNow()
-                showMessage("Porteiro cadastrado. Entregue o PIN temporário para o primeiro acesso.")
-            }
-            .onFailure { showMessage(it.message ?: "Não foi possível cadastrar o porteiro.") }
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            repository.createGatekeeper(displayName).onSuccess { (_, pin) -> _uiState.value = _uiState.value.copy(generatedGatekeeperPin = pin) }.getOrThrow()
+        } else {
+            val created = adminRemoteClient.createGatekeeper(displayName).getOrThrow()
+            _uiState.value = _uiState.value.copy(generatedGatekeeperPin = created.temporaryPin)
+            remoteSyncClient.pullSnapshot().getOrThrow()
+        }
+        showMessage("Porteiro cadastrado. Entregue o PIN temporário para o primeiro acesso.")
     }
 
-    fun clearGeneratedGatekeeperPin() {
-        _uiState.value = _uiState.value.copy(generatedGatekeeperPin = null)
-    }
+    fun clearGeneratedGatekeeperPin() { _uiState.value = _uiState.value.copy(generatedGatekeeperPin = null) }
 
     fun downloadAdminReport(days: Int) = launchBusy {
         adminRemoteClient.downloadReport(days)
@@ -263,11 +306,10 @@ class AppViewModel(
     fun clearReportFile() { _uiState.value = _uiState.value.copy(reportFilePath = null) }
 
     fun resolveAlert(id: String) = launchBusy {
-        if (BuildConfig.SUPABASE_URL.isBlank()) {
-            repository.resolveAlert(id)
-        } else {
+        if (BuildConfig.SUPABASE_URL.isBlank()) repository.resolveAlert(id)
+        else {
             adminRemoteClient.resolveAlert(id).getOrThrow()
-            remoteSyncClient.pullSnapshot().getOrThrow()
+            repository.resolveAlert(id)
         }
         showMessage("Alerta marcado como resolvido.")
     }
@@ -275,6 +317,7 @@ class AppViewModel(
     fun back() {
         val next = when (_uiState.value.screen) {
             AppScreen.AreaChoice -> AppScreen.AreaChoice
+            AppScreen.AdminLogin -> AppScreen.AreaChoice
             is AppScreen.ProfileChoice -> AppScreen.AreaChoice
             is AppScreen.PinLogin -> AppScreen.ProfileChoice(users.value.firstOrNull { it.id == (_uiState.value.screen as AppScreen.PinLogin).userId }?.role ?: UserRole.GATEKEEPER)
             is AppScreen.ChangePin -> AppScreen.AreaChoice
@@ -316,7 +359,6 @@ class AppViewModel(
         private val adminRemoteClient: AdminRemoteClient,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            AppViewModel(repository, remoteSyncClient, adminRemoteClient) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository, remoteSyncClient, adminRemoteClient) as T
     }
 }
