@@ -92,6 +92,9 @@ interface ScheduleDao {
 
     @Query("DELETE FROM schedule_checkpoints")
     suspend fun clearCheckpointLinks()
+
+    @Query("DELETE FROM schedule_assignees")
+    suspend fun clearAssignees()
 }
 
 @Dao
@@ -138,7 +141,7 @@ interface PatrolDao {
     @Query("SELECT COUNT(*) FROM patrol_executions")
     fun observeExecutionCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM patrol_executions WHERE status IN ('INCOMPLETE','LATE','MISSED','SUSPICIOUS')")
+    @Query("SELECT COUNT(*) FROM patrol_executions WHERE status IN ('INCOMPLETE','LATE','MISSED','SUSPICIOUS') OR suspicious = 1")
     fun observeProblemExecutionCount(): Flow<Int>
 }
 
@@ -173,6 +176,9 @@ interface OutboxDao {
 
     @Query("SELECT * FROM outbox_events WHERE status = 'PENDING' ORDER BY createdAtEpochMillis LIMIT :limit")
     suspend fun pendingBatch(limit: Int): List<OutboxEventEntity>
+
+    @Query("SELECT * FROM outbox_events WHERE aggregateId = :aggregateId AND eventType = :eventType ORDER BY createdAtEpochMillis LIMIT 1")
+    suspend fun findEvent(aggregateId: String, eventType: String): OutboxEventEntity?
 
     @Query("UPDATE outbox_events SET status = 'SYNCED', syncedAtEpochMillis = :at, lastError = NULL WHERE eventId = :eventId")
     suspend fun markSynced(eventId: String, at: Long)
