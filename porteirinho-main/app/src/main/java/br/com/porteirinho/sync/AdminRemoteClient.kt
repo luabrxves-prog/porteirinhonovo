@@ -26,6 +26,30 @@ class AdminRemoteClient(
         SyncScheduler.runNow(context)
     }
 
+    suspend fun resolveAlert(alertId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Resolução central de alerta precisa do servidor configurado." }
+            val token = deviceToken() ?: error("Este aparelho ainda não foi provisionado para sincronização.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/admin-alert"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                doInput = true
+                doOutput = true
+                setHeaders(token)
+            }
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
+                it.write(JSONObject().put("alert_id", alertId).toString())
+            }
+            val code = connection.responseCode
+            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            connection.disconnect()
+            check(code in 200..299) { "Não foi possível resolver o alerta. HTTP $code ${response.take(160)}" }
+        }
+    }
+
     suspend fun createPoint(name: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             check(BuildConfig.SUPABASE_URL.isNotBlank()) { "Cadastro de ponto precisa do servidor configurado." }
