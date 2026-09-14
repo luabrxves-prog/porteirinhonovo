@@ -3,10 +3,13 @@ package br.com.porteirinho.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import br.com.porteirinho.data.AdminConfigurationRepository
 import br.com.porteirinho.data.PatrolRepository
 import br.com.porteirinho.data.local.UserEntity
 import br.com.porteirinho.data.local.UserRole
 import br.com.porteirinho.domain.ActivePatrolSnapshot
+import br.com.porteirinho.domain.AdminBlock
+import br.com.porteirinho.domain.AdminRound
 import br.com.porteirinho.domain.AvailablePatrol
 import br.com.porteirinho.domain.LoginResult
 import br.com.porteirinho.domain.ScanResult
@@ -26,6 +29,8 @@ sealed interface AppScreen {
     data object Scanner : AppScreen
     data object AdminDashboard : AppScreen
     data object AdminAlerts : AppScreen
+    data object AdminPoints : AppScreen
+    data object AdminRounds : AppScreen
 }
 
 data class AppUiState(
@@ -38,7 +43,10 @@ data class AppUiState(
     val message: String? = null,
 )
 
-class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
+class AppViewModel(
+    private val repository: PatrolRepository,
+    private val adminRepository: AdminConfigurationRepository,
+) : ViewModel() {
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
 
@@ -49,9 +57,16 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
     val executionCount = repository.executionCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val problemExecutionCount = repository.problemExecutionCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val unresolvedAlerts = repository.unresolvedAlertCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val adminBlocks: StateFlow<List<AdminBlock>> = adminRepository.blocks
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val adminRounds: StateFlow<List<AdminRound>> = adminRepository.rounds
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
-        viewModelScope.launch { repository.seedDemoIfEmpty() }
+        viewModelScope.launch {
+            repository.seedDemoIfEmpty()
+            adminRepository.ensureFixedStructure()
+        }
     }
 
     fun chooseArea(role: String) {
@@ -143,6 +158,32 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
         _uiState.value = _uiState.value.copy(screen = AppScreen.AdminAlerts)
     }
 
+    fun openAdminPoints() {
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminPoints)
+    }
+
+    fun openAdminRounds() {
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminRounds)
+    }
+
+    fun addExtraPoint(blockId: String, name: String) = launchBusy {
+        adminRepository.addExtraPoint(blockId, name)
+            .onSuccess { showMessage("Ponto extra criado com QR Code ativo.") }
+            .onFailure { showMessage(it.message ?: "Não foi possível adicionar o ponto extra.") }
+    }
+
+    fun replaceQr(checkpointId: String) = launchBusy {
+        adminRepository.replaceQr(checkpointId)
+            .onSuccess { showMessage("QR Code substituído. O ponto continua o mesmo.") }
+            .onFailure { showMessage(it.message ?: "Não foi possível substituir o QR Code.") }
+    }
+
+    fun updateFixedRound(scheduleId: String, name: String, startMinuteOfDay: Int) = launchBusy {
+        adminRepository.updateFixedRound(scheduleId, name, startMinuteOfDay)
+            .onSuccess { showMessage("Ronda atualizada.") }
+            .onFailure { showMessage(it.message ?: "Não foi possível atualizar a ronda.") }
+    }
+
     fun resolveAlert(id: String) = viewModelScope.launch { repository.resolveAlert(id) }
 
     fun back() {
@@ -155,9 +196,14 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
             AppScreen.GatekeeperHome -> AppScreen.AreaChoice
             AppScreen.Patrol -> AppScreen.GatekeeperHome
             AppScreen.Scanner -> AppScreen.Patrol
-            AppScreen.AdminDashboard, AppScreen.AdminAlerts -> AppScreen.AreaChoice
+            AppScreen.AdminDashboard -> AppScreen.AreaChoice
+            AppScreen.AdminAlerts, AppScreen.AdminPoints, AppScreen.AdminRounds -> AppScreen.AdminDashboard
         }
-        _uiState.value = _uiState.value.copy(screen = next, authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser, message = null)
+        _uiState.value = _uiState.value.copy(
+            screen = next,
+            authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser,
+            message = null,
+        )
     }
 
     fun consumeMessage() {
@@ -183,8 +229,11 @@ class AppViewModel(private val repository: PatrolRepository) : ViewModel() {
         _uiState.value = _uiState.value.copy(message = message)
     }
 
-    class Factory(private val repository: PatrolRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: PatrolRepository,
+        private val adminRepository: AdminConfigurationRepository,
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(repository, adminRepository) as T
     }
 }
