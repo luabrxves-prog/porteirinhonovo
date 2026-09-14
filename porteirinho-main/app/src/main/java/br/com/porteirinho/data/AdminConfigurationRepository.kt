@@ -77,8 +77,9 @@ class AdminConfigurationRepository(
 
     suspend fun ensureFixedStructure() {
         val now = System.currentTimeMillis()
+        val firstInstall = directoryDao.findLocation(FixedPatrolStructure.PropertyId) == null
         database.withTransaction {
-            if (directoryDao.findLocation(FixedPatrolStructure.PropertyId) == null) {
+            if (firstInstall) {
                 directoryDao.upsertLocation(
                     LocationNodeEntity(
                         id = FixedPatrolStructure.PropertyId,
@@ -155,6 +156,14 @@ class AdminConfigurationRepository(
             }
 
             scheduleDao.deactivateSchedule("schedule-demo", now)
+
+            if (firstInstall) {
+                enqueue(
+                    aggregateId = FixedPatrolStructure.PropertyId,
+                    eventType = "FIXED_STRUCTURE_ENSURED",
+                    payload = JSONObject().put("schema", 1),
+                )
+            }
         }
         SyncScheduler.runNow(context)
     }
