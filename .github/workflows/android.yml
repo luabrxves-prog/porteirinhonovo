@@ -9,9 +9,14 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: porteirinho-main
+
+    env:
+      SUPABASE_URL: https://vnammkljeterezqtpvvm.supabase.co
+      SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
 
     steps:
       - name: Checkout
@@ -33,3 +38,14 @@ jobs:
 
       - name: Android lint
         run: gradle lintDebug
+
+      - name: Build debug APK
+        run: gradle assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: porteirinho-apk
+          path: porteirinho-main/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
