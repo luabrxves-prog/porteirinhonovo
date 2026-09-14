@@ -29,12 +29,17 @@ sealed interface AppScreen {
     data object Scanner : AppScreen
     data object AdminDashboard : AppScreen
     data object AdminAlerts : AppScreen
-    data object AdminPoints : AppScreen
-    data object AdminRounds : AppScreen
+}
+
+enum class AdminSection {
+    HOME,
+    POINTS,
+    ROUNDS,
 }
 
 data class AppUiState(
     val screen: AppScreen = AppScreen.AreaChoice,
+    val adminSection: AdminSection = AdminSection.HOME,
     val authenticatedUser: UserEntity? = null,
     val shiftActive: Boolean = false,
     val availablePatrols: List<AvailablePatrol> = emptyList(),
@@ -70,7 +75,7 @@ class AppViewModel(
     }
 
     fun chooseArea(role: String) {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), message = null)
+        _uiState.value = _uiState.value.copy(screen = AppScreen.ProfileChoice(role), adminSection = AdminSection.HOME, message = null)
     }
 
     fun chooseProfile(userId: String) {
@@ -83,7 +88,11 @@ class AppViewModel(
             is LoginResult.Success -> {
                 val user = repository.user(result.userId)
                 if (result.role == UserRole.ADMIN) {
-                    _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, authenticatedUser = user)
+                    _uiState.value = _uiState.value.copy(
+                        screen = AppScreen.AdminDashboard,
+                        adminSection = AdminSection.HOME,
+                        authenticatedUser = user,
+                    )
                 } else {
                     val active = repository.resumePatrol(result.userId)
                     val shiftActive = repository.hasActiveShift(result.userId)
@@ -159,11 +168,11 @@ class AppViewModel(
     }
 
     fun openAdminPoints() {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminPoints)
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, adminSection = AdminSection.POINTS)
     }
 
     fun openAdminRounds() {
-        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminRounds)
+        _uiState.value = _uiState.value.copy(screen = AppScreen.AdminDashboard, adminSection = AdminSection.ROUNDS)
     }
 
     fun addExtraPoint(blockId: String, name: String) = launchBusy {
@@ -187,21 +196,26 @@ class AppViewModel(
     fun resolveAlert(id: String) = viewModelScope.launch { repository.resolveAlert(id) }
 
     fun back() {
-        val next = when (_uiState.value.screen) {
+        val current = _uiState.value
+        if (current.screen == AppScreen.AdminDashboard && current.adminSection != AdminSection.HOME) {
+            _uiState.value = current.copy(adminSection = AdminSection.HOME, message = null)
+            return
+        }
+        val next = when (current.screen) {
             AppScreen.AreaChoice -> AppScreen.AreaChoice
             is AppScreen.ProfileChoice -> AppScreen.AreaChoice
             is AppScreen.PinLogin -> AppScreen.ProfileChoice(
-                users.value.firstOrNull { it.id == (_uiState.value.screen as AppScreen.PinLogin).userId }?.role ?: UserRole.GATEKEEPER,
+                users.value.firstOrNull { it.id == (current.screen as AppScreen.PinLogin).userId }?.role ?: UserRole.GATEKEEPER,
             )
             AppScreen.GatekeeperHome -> AppScreen.AreaChoice
             AppScreen.Patrol -> AppScreen.GatekeeperHome
             AppScreen.Scanner -> AppScreen.Patrol
-            AppScreen.AdminDashboard -> AppScreen.AreaChoice
-            AppScreen.AdminAlerts, AppScreen.AdminPoints, AppScreen.AdminRounds -> AppScreen.AdminDashboard
+            AppScreen.AdminDashboard, AppScreen.AdminAlerts -> AppScreen.AreaChoice
         }
-        _uiState.value = _uiState.value.copy(
+        _uiState.value = current.copy(
             screen = next,
-            authenticatedUser = if (next == AppScreen.AreaChoice) null else _uiState.value.authenticatedUser,
+            adminSection = AdminSection.HOME,
+            authenticatedUser = if (next == AppScreen.AreaChoice) null else current.authenticatedUser,
             message = null,
         )
     }
