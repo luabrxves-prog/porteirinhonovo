@@ -13,7 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun HeaderRow(title: String, onBack: () -> Unit) {
+fun AdminHeaderRow(title: String, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         TextButton(onClick = onBack) { Text("Voltar") }
         Spacer(Modifier.width(8.dp))
