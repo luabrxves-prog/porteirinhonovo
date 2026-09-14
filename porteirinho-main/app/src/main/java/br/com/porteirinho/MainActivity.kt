@@ -6,7 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.viewmodel.compose.viewModel
 import br.com.porteirinho.ui.AppViewModel
-import br.com.porteirinho.ui.PorteirinhoApp
+import br.com.porteirinho.ui.PorteirinhoRoot
 import br.com.porteirinho.ui.theme.PorteirinhoTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
                 val appViewModel: AppViewModel = viewModel(
                     factory = AppViewModel.Factory(container.repository, container.adminRepository),
                 )
-                PorteirinhoApp(appViewModel)
+                PorteirinhoRoot(appViewModel)
             }
         }
     }
