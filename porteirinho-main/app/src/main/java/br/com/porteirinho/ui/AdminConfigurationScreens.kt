@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,7 +34,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -64,7 +63,7 @@ fun AdminPointsScreen(
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { HeaderRow("Pontos de Ronda", onBack) }
+        item { AdminHeaderRow("Pontos de Ronda", onBack) }
         item {
             Text(
                 "2 blocos • 30 pontos fixos. Pontos fixos não podem ser apagados; o QR pode ser substituído sem alterar o ponto.",
@@ -193,7 +192,7 @@ fun AdminRoundsScreen(
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { HeaderRow("Rondas Fixas", onBack) }
+        item { AdminHeaderRow("Rondas Fixas", onBack) }
         item {
             Text(
                 "As 4 rondas são obrigatórias. O administrador pode alterar somente nome e horário de início; duração e regras internas permanecem controladas pelo sistema.",
@@ -254,7 +253,7 @@ fun AdminRoundsScreen(
                         onValueChange = { editTime = it.take(5) },
                         label = { Text("Horário de início (HH:mm)") },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text("Não é possível excluir esta ronda nem criar uma quinta ronda fixa.", style = MaterialTheme.typography.bodySmall)
