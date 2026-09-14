@@ -13,10 +13,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val repository = (application as PorteirinhoApplication).container.repository
+        val container = (application as PorteirinhoApplication).container
         setContent {
             PorteirinhoTheme {
-                val appViewModel: AppViewModel = viewModel(factory = AppViewModel.Factory(repository))
+                val appViewModel: AppViewModel = viewModel(
+                    factory = AppViewModel.Factory(
+                        container.repository,
+                        container.remoteSyncClient,
+                        container.adminRemoteClient,
+                    ),
+                )
                 PorteirinhoApp(appViewModel)
             }
         }

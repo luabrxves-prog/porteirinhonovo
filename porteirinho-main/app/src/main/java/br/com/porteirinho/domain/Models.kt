@@ -6,6 +6,8 @@ data class AvailablePatrol(
     val schedule: PatrolScheduleEntity,
     val pointCount: Int,
     val windowLabel: String,
+    val durationLabel: String,
+    val toleranceLabel: String,
     val availableNow: Boolean,
 )
 
@@ -20,15 +22,16 @@ data class ActivePatrolSnapshot(
 ) {
     val completedPoints: Int get() = visitedPointIds.size
     val progress: Float get() = if (totalPoints == 0) 0f else completedPoints.toFloat() / totalPoints
+    val canFinish: Boolean get() = totalPoints > 0 && completedPoints == totalPoints
 }
 
 sealed interface LoginResult {
-    data class Success(val userId: String, val role: String) : LoginResult
+    data class Success(val userId: String, val role: String, val mustChangePin: Boolean) : LoginResult
     data class Error(val message: String) : LoginResult
 }
 
 sealed interface ScanResult {
-    data class Accepted(val checkpointName: String, val suspicious: Boolean) : ScanResult
+    data class Accepted(val checkpointId: String, val checkpointName: String, val suspicious: Boolean) : ScanResult
     data class AlreadyVisited(val checkpointName: String) : ScanResult
     data class Rejected(val message: String) : ScanResult
 }

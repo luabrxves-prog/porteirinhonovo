@@ -91,6 +91,7 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
     implementation(libs.mlkit.barcode)
+    implementation("com.google.zxing:core:3.5.3")
 
     implementation(platform(libs.supabase.bom))
     implementation(libs.supabase.auth)

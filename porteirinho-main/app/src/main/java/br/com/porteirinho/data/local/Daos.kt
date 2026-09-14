@@ -28,10 +28,10 @@ interface UserDao {
 @Dao
 interface DirectoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertLocation(node: LocationNodeEntity)
+    fun upsertLocation(node: LocationNodeEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertCheckpoint(checkpoint: CheckpointEntity)
+    fun upsertCheckpoint(checkpoint: CheckpointEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertQrCredential(credential: QrCredentialEntity)
@@ -39,22 +39,40 @@ interface DirectoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDevice(device: DeviceEntity)
 
+    @Query("SELECT * FROM checkpoints WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY sequenceHint, name")
+    fun observeActiveCheckpoints(): Flow<List<CheckpointEntity>>
+
+    @Query("SELECT * FROM checkpoints WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY sequenceHint, name")
+    suspend fun activeCheckpoints(): List<CheckpointEntity>
+
+    @Query("SELECT * FROM location_nodes WHERE type = 'PLACE' AND active = 1 AND archivedAtEpochMillis IS NULL ORDER BY name LIMIT 1")
+    suspend fun firstActivePlace(): LocationNodeEntity?
+
     @Query("SELECT * FROM devices WHERE publicId = :publicId LIMIT 1")
     suspend fun findDeviceByPublicId(publicId: String): DeviceEntity?
 
     @Query("SELECT * FROM checkpoints WHERE id = :id LIMIT 1")
     suspend fun findCheckpoint(id: String): CheckpointEntity?
 
+    @Query("SELECT * FROM qr_credentials WHERE checkpointId = :checkpointId AND status = 'ACTIVE' LIMIT 1")
+    suspend fun activeQrForCheckpoint(checkpointId: String): QrCredentialEntity?
+
+    @Query("SELECT * FROM qr_credentials WHERE id = :id LIMIT 1")
+    suspend fun findQrById(id: String): QrCredentialEntity?
+
     @Query("SELECT * FROM qr_credentials WHERE tokenHash = :tokenHash LIMIT 1")
     suspend fun findQrByTokenHash(tokenHash: String): QrCredentialEntity?
+
+    @Update
+    suspend fun updateQrCredential(credential: QrCredentialEntity)
 }
 
 @Dao
 interface ScheduleDao {
-    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
+    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY fixedSlot, startMinuteOfDay")
     fun observeActiveSchedules(): Flow<List<PatrolScheduleEntity>>
 
-    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
+    @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY fixedSlot, startMinuteOfDay")
     suspend fun activeSchedules(): List<PatrolScheduleEntity>
 
     @Query("SELECT * FROM patrol_schedules WHERE id = :id LIMIT 1")
@@ -74,6 +92,12 @@ interface ScheduleDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAssignee(link: ScheduleAssigneeEntity)
+
+    @Query("DELETE FROM schedule_checkpoints")
+    suspend fun clearCheckpointLinks()
+
+    @Query("DELETE FROM schedule_assignees")
+    suspend fun clearAssignees()
 }
 
 @Dao
@@ -83,6 +107,9 @@ interface PatrolDao {
 
     @Query("SELECT * FROM shifts WHERE endedAtEpochMillis IS NULL ORDER BY startedAtEpochMillis DESC LIMIT 1")
     suspend fun anyActiveShift(): ShiftEntity?
+
+    @Query("SELECT * FROM shifts WHERE id = :id LIMIT 1")
+    suspend fun findShift(id: String): ShiftEntity?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertShift(shift: ShiftEntity)
@@ -114,10 +141,13 @@ interface PatrolDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertOccurrence(occurrence: OccurrenceEntity)
 
+    @Query("SELECT * FROM occurrences WHERE executionId = :executionId ORDER BY createdAtEpochMillis")
+    suspend fun occurrences(executionId: String): List<OccurrenceEntity>
+
     @Query("SELECT COUNT(*) FROM patrol_executions")
     fun observeExecutionCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM patrol_executions WHERE status IN ('INCOMPLETE','LATE','MISSED','SUSPICIOUS')")
+    @Query("SELECT COUNT(*) FROM patrol_executions WHERE status IN ('INCOMPLETE','LATE','MISSED','SUSPICIOUS') OR suspicious = 1")
     fun observeProblemExecutionCount(): Flow<Int>
 }
 
@@ -125,6 +155,9 @@ interface PatrolDao {
 interface AlertDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(alert: AlertEntity)
+
+    @Query("SELECT * FROM alerts WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): AlertEntity?
 
     @Query("SELECT * FROM alerts ORDER BY createdAtEpochMillis DESC LIMIT :limit")
     fun observeRecent(limit: Int = 100): Flow<List<AlertEntity>>
@@ -149,6 +182,9 @@ interface OutboxDao {
 
     @Query("SELECT * FROM outbox_events WHERE status = 'PENDING' ORDER BY createdAtEpochMillis LIMIT :limit")
     suspend fun pendingBatch(limit: Int): List<OutboxEventEntity>
+
+    @Query("SELECT * FROM outbox_events WHERE aggregateId = :aggregateId AND eventType = :eventType ORDER BY createdAtEpochMillis LIMIT 1")
+    suspend fun findEvent(aggregateId: String, eventType: String): OutboxEventEntity?
 
     @Query("UPDATE outbox_events SET status = 'SYNCED', syncedAtEpochMillis = :at, lastError = NULL WHERE eventId = :eventId")
     suspend fun markSynced(eventId: String, at: Long)
