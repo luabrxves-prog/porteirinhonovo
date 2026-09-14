@@ -39,6 +39,18 @@ interface DirectoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDevice(device: DeviceEntity)
 
+    @Query("SELECT * FROM location_nodes WHERE id = :id LIMIT 1")
+    suspend fun findLocation(id: String): LocationNodeEntity?
+
+    @Query("SELECT * FROM location_nodes WHERE id IN (:ids) AND active = 1 AND archivedAtEpochMillis IS NULL")
+    fun observeLocationsByIds(ids: List<String>): Flow<List<LocationNodeEntity>>
+
+    @Query("SELECT * FROM checkpoints WHERE locationNodeId IN (:locationIds) AND active = 1 AND archivedAtEpochMillis IS NULL ORDER BY locationNodeId, sequenceHint, name")
+    fun observeActiveCheckpointsForLocations(locationIds: List<String>): Flow<List<CheckpointEntity>>
+
+    @Query("SELECT * FROM qr_credentials WHERE status = 'ACTIVE' AND revokedAtEpochMillis IS NULL")
+    fun observeActiveQrCredentials(): Flow<List<QrCredentialEntity>>
+
     @Query("SELECT * FROM devices WHERE publicId = :publicId LIMIT 1")
     suspend fun findDeviceByPublicId(publicId: String): DeviceEntity?
 
@@ -47,12 +59,24 @@ interface DirectoryDao {
 
     @Query("SELECT * FROM qr_credentials WHERE tokenHash = :tokenHash LIMIT 1")
     suspend fun findQrByTokenHash(tokenHash: String): QrCredentialEntity?
+
+    @Query("SELECT * FROM qr_credentials WHERE checkpointId = :checkpointId AND status = 'ACTIVE' AND revokedAtEpochMillis IS NULL ORDER BY version DESC LIMIT 1")
+    suspend fun activeQrForCheckpoint(checkpointId: String): QrCredentialEntity?
+
+    @Query("UPDATE qr_credentials SET status = 'REVOKED', revokedAtEpochMillis = :revokedAt WHERE checkpointId = :checkpointId AND status = 'ACTIVE' AND revokedAtEpochMillis IS NULL")
+    suspend fun revokeActiveQr(checkpointId: String, revokedAt: Long)
+
+    @Query("SELECT COALESCE(MAX(sequenceHint), 0) FROM checkpoints WHERE locationNodeId = :locationNodeId AND archivedAtEpochMillis IS NULL")
+    suspend fun maxSequenceForLocation(locationNodeId: String): Int
 }
 
 @Dao
 interface ScheduleDao {
     @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
     fun observeActiveSchedules(): Flow<List<PatrolScheduleEntity>>
+
+    @Query("SELECT * FROM patrol_schedules WHERE id IN (:ids) AND active = 1 AND archivedAtEpochMillis IS NULL")
+    fun observeSchedulesByIds(ids: List<String>): Flow<List<PatrolScheduleEntity>>
 
     @Query("SELECT * FROM patrol_schedules WHERE active = 1 AND archivedAtEpochMillis IS NULL ORDER BY startMinuteOfDay")
     suspend fun activeSchedules(): List<PatrolScheduleEntity>
@@ -62,6 +86,9 @@ interface ScheduleDao {
 
     @Query("SELECT checkpointId FROM schedule_checkpoints WHERE scheduleId = :scheduleId ORDER BY sequence")
     suspend fun checkpointIds(scheduleId: String): List<String>
+
+    @Query("SELECT COALESCE(MAX(sequence), 0) + 1 FROM schedule_checkpoints WHERE scheduleId = :scheduleId")
+    suspend fun nextCheckpointSequence(scheduleId: String): Int
 
     @Query("SELECT userId FROM schedule_assignees WHERE scheduleId = :scheduleId")
     suspend fun assigneeIds(scheduleId: String): List<String>
@@ -74,6 +101,12 @@ interface ScheduleDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAssignee(link: ScheduleAssigneeEntity)
+
+    @Query("DELETE FROM schedule_checkpoints WHERE scheduleId = :scheduleId")
+    suspend fun deleteCheckpointLinks(scheduleId: String)
+
+    @Query("UPDATE patrol_schedules SET active = 0, archivedAtEpochMillis = :archivedAt, updatedAtEpochMillis = :archivedAt WHERE id = :scheduleId")
+    suspend fun deactivateSchedule(scheduleId: String, archivedAt: Long)
 }
 
 @Dao
