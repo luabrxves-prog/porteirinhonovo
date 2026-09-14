@@ -44,6 +44,9 @@ fun PorteirinhoRoot(viewModel: AppViewModel) {
     val blocks by viewModel.adminBlocks.collectAsStateWithLifecycle()
     val rounds by viewModel.adminRounds.collectAsStateWithLifecycle()
     val pendingSync by viewModel.pendingSync.collectAsStateWithLifecycle()
+    val permanentFailures by viewModel.permanentFailures.collectAsStateWithLifecycle()
+    val executionCount by viewModel.executionCount.collectAsStateWithLifecycle()
+    val problemExecutionCount by viewModel.problemExecutionCount.collectAsStateWithLifecycle()
     val unresolvedAlerts by viewModel.unresolvedAlerts.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -63,7 +66,10 @@ fun PorteirinhoRoot(viewModel: AppViewModel) {
                     blockCount = blocks.size,
                     fixedPointCount = blocks.sumOf { block -> block.points.count { it.fixed } },
                     roundCount = rounds.size,
+                    executionCount = executionCount,
+                    problemCount = problemExecutionCount,
                     pendingSync = pendingSync,
+                    permanentFailures = permanentFailures,
                     unresolvedAlerts = unresolvedAlerts,
                     onPoints = viewModel::openAdminPoints,
                     onRounds = viewModel::openAdminRounds,
@@ -102,7 +108,10 @@ private fun AdminPatrolConfigurationHome(
     blockCount: Int,
     fixedPointCount: Int,
     roundCount: Int,
+    executionCount: Int,
+    problemCount: Int,
     pendingSync: Int,
+    permanentFailures: Int,
     unresolvedAlerts: Int,
     onPoints: () -> Unit,
     onRounds: () -> Unit,
@@ -115,55 +124,62 @@ private fun AdminPatrolConfigurationHome(
     ) {
         item {
             SummaryHero(
-                eyebrow = "Configuração de rondas",
+                eyebrow = "Resumo",
                 title = "Administração",
-                description = "Estrutura fixa do condomínio e horários obrigatórios",
-                badge = if (pendingSync == 0) "Configuração sincronizada" else "$pendingSync alterações aguardando sincronização",
+                description = "Acompanhe a operação e as pendências",
+                badge = if (permanentFailures > 0) "$permanentFailures falhas exigem atenção" else "Operação monitorada",
                 initials = "AD",
                 modifier = Modifier.statusBarsPadding(),
             )
         }
         item {
             Column(Modifier.padding(horizontal = 24.dp)) {
-                SectionHeading("Estrutura do condomínio", "Somente os módulos desta versão estão habilitados")
-                Spacer(Modifier.height(14.dp))
+                SectionHeading("Visão geral", "Indicadores salvos neste dispositivo")
+                Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MetricTile(blockCount.toString(), "blocos", "B", Modifier.weight(1f))
-                    MetricTile(fixedPointCount.toString(), "pontos fixos", "QR", Modifier.weight(1f))
-                    MetricTile(roundCount.toString(), "rondas fixas", "R", Modifier.weight(1f))
+                    MetricTile(executionCount.toString(), "rondas", "R", Modifier.weight(1f))
+                    MetricTile(problemCount.toString(), "com alerta", "!", Modifier.weight(1f), MaterialTheme.colorScheme.error)
+                    MetricTile(pendingSync.toString(), "para sincronizar", "S", Modifier.weight(1f), MaterialTheme.colorScheme.tertiary)
                 }
             }
         }
         item {
+            Text(
+                "$blockCount blocos • $fixedPointCount pontos fixos • $roundCount rondas obrigatórias",
+                modifier = Modifier.padding(horizontal = 24.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item { SectionHeading("Atalhos", "Gerencie os principais módulos", Modifier.padding(horizontal = 24.dp)) }
+        item {
             Box(Modifier.padding(horizontal = 24.dp)) {
-                AdminConfigurationCard(
-                    title = "Pontos de Ronda",
-                    subtitle = "2 blocos, 30 pontos fixos, QR Codes e pontos extras",
-                    onClick = onPoints,
-                )
+                AdminConfigurationCard("Central de alertas", "$unresolvedAlerts alertas não resolvidos", onAlerts)
             }
         }
         item {
             Box(Modifier.padding(horizontal = 24.dp)) {
-                AdminConfigurationCard(
-                    title = "Rondas Fixas",
-                    subtitle = "4 rondas obrigatórias • editar somente nome e início",
-                    onClick = onRounds,
-                )
+                AdminConfigurationCard("Pontos de Ronda", "2 blocos, 30 pontos fixos, QR Codes e pontos extras", onPoints)
             }
         }
         item {
             Box(Modifier.padding(horizontal = 24.dp)) {
-                AdminConfigurationCard(
-                    title = "Central de alertas",
-                    subtitle = "$unresolvedAlerts alertas não resolvidos",
-                    onClick = onAlerts,
-                )
+                AdminConfigurationCard("Rondas Fixas", "4 rondas obrigatórias • editar nome e horário de início", onRounds)
+            }
+        }
+        item {
+            Box(Modifier.padding(horizontal = 24.dp)) {
+                AdminConfigurationCard("Porteiros e dispositivos", "Perfis, bloqueios e aparelhos autorizados", {})
+            }
+        }
+        item {
+            Box(Modifier.padding(horizontal = 24.dp)) {
+                AdminConfigurationCard("Histórico e auditoria", "Linha do tempo e alterações administrativas", {})
             }
         }
         item {
             Text(
-                "Cadastro de porteiros, PINs, associações e respectivas FKs permanecem fora do escopo desta versão.",
+                "Nesta versão, somente Pontos de Ronda, QR Codes, os 2 blocos e as 4 Rondas Fixas receberam alterações. A área de porteiros permanece inalterada.",
                 modifier = Modifier.padding(horizontal = 24.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
