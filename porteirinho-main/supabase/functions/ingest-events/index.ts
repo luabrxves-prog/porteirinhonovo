@@ -95,8 +95,8 @@ async function ensureFixedStructure(supabase: SupabaseClient, organizationId: st
       active: true,
       archived_at: null,
       updated_at: new Date().toISOString(),
-    }),
-    "property_upsert_failed",
+    }, { onConflict: "id", ignoreDuplicates: true }),
+    "property_insert_failed",
   );
 
   for (let block = 1; block <= 2; block += 1) {
@@ -111,8 +111,8 @@ async function ensureFixedStructure(supabase: SupabaseClient, organizationId: st
         active: true,
         archived_at: null,
         updated_at: new Date().toISOString(),
-      }),
-      "block_upsert_failed",
+      }, { onConflict: "id", ignoreDuplicates: true }),
+      "block_insert_failed",
     );
 
     for (let slot = 1; slot <= 15; slot += 1) {
@@ -135,8 +135,8 @@ async function ensureFixedStructure(supabase: SupabaseClient, organizationId: st
           active: true,
           archived_at: null,
           updated_at: new Date().toISOString(),
-        }),
-        "checkpoint_upsert_failed",
+        }, { onConflict: "id", ignoreDuplicates: true }),
+        "checkpoint_insert_failed",
       );
 
       await requireNoError(
@@ -148,8 +148,8 @@ async function ensureFixedStructure(supabase: SupabaseClient, organizationId: st
           version: 1,
           status: "ACTIVE",
           revoked_at: null,
-        }),
-        "qr_upsert_failed",
+        }, { onConflict: "id", ignoreDuplicates: true }),
+        "qr_insert_failed",
       );
     }
   }
@@ -176,8 +176,8 @@ async function ensureFixedStructure(supabase: SupabaseClient, organizationId: st
         active: true,
         archived_at: null,
         updated_at: new Date().toISOString(),
-      }),
-      "schedule_upsert_failed",
+      }, { onConflict: "id", ignoreDuplicates: true }),
+      "schedule_insert_failed",
     );
 
     const links = allPointIds.map((pointId, index) => ({
