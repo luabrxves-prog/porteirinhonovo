@@ -2,3 +2,6 @@ project_id = "porteirinho"
 
 [functions.ingest-events]
 verify_jwt = false
+
+[functions.config-snapshot]
+verify_jwt = false
